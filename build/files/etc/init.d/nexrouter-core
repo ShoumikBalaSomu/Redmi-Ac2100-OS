@@ -56,9 +56,7 @@ set_affinity() {
 }
 
 configure_irqs() {
-	[ "$CORES" -eq 2 ] || { log "not pinning IRQs: $CORES cores detected, expected 2"; return; }
-
-	local wired="" radio=""
+	local wired="" radio_2g="" radio_5g="" radio=""
 	while read -r line; do
 		num="${line%%:*}"
 		num="$(printf '%s' "$num" | tr -d ' ')"
@@ -66,18 +64,37 @@ configure_irqs() {
 		name="$(printf '%s' "$line" | awk '{print $NF}')"
 		case "$name" in
 			# Wired path: the MT7621 ethernet/GDMA and the MT7530 switch
-			eth*|mt7621-eth*|gsw*|gdma*|hsdma*|1e100000*)
+			eth*|mt7621-eth*|gsw*|gdma*|hsdma*|1e100000*|fe100000*)
 				wired="$wired $num" ;;
-			# PCIe radios: mt76 exposes per-radio IRQs
-			pcie*|mt76*|rai*|rax*|ra0*|apcli*|1e140000*|1e150000*)
+			# 2.4GHz radio: MT7603 on pcie1
+			*mt7603*|*1e140000*|*1e150000*)
+				radio_2g="$radio_2g $num" ;;
+			# 5GHz radio: MT7615 on pcie0
+			*mt7615*|*1e141000*)
+				radio_5g="$radio_5g $num" ;;
+			# General PCIe / WiFi
+			pcie*|mt76*|rai*|rax*|ra0*|apcli*)
 				radio="$radio $num" ;;
 		esac
 	done < /proc/interrupts
 
-	[ -n "$wired" ] && set_affinity 1 $wired
-	[ -n "$radio" ] && set_affinity 2 $radio
-
-	log "IRQ affinity: wired[$(printf '%s' "$wired" | wc -w)] -> core0, radio[$(printf '%s' "$radio" | wc -w)] -> core1"
+	if [ "$CORES" -ge 4 ]; then
+		# 4 VPEs on MT7621 (Core0: CPU0,1; Core1: CPU2,3)
+		# Wired GMAC -> CPU0 (mask 1)
+		# 2.4GHz MT7603 -> CPU1 (mask 2)
+		# 5GHz MT7615 -> CPU2,3 (mask c)
+		[ -n "$wired" ] && set_affinity 1 $wired
+		[ -n "$radio_2g" ] && set_affinity 2 $radio_2g
+		[ -n "$radio_5g" ] && set_affinity c $radio_5g
+		[ -z "$radio_5g" ] && [ -n "$radio" ] && set_affinity c $radio
+		log "IRQ affinity (4-VPE): wired -> CPU0, 2.4G -> CPU1, 5G -> CPU2/3"
+	elif [ "$CORES" -ge 2 ]; then
+		[ -n "$wired" ] && set_affinity 1 $wired
+		[ -n "$radio_2g" ] && set_affinity 2 $radio_2g
+		[ -n "$radio_5g" ] && set_affinity 2 $radio_5g
+		[ -n "$radio" ] && set_affinity 2 $radio
+		log "IRQ affinity (2-core): wired -> core0, radio -> core1"
+	fi
 }
 
 # ---- RPS for the wired interface ------------------------------------------
@@ -88,8 +105,8 @@ configure_rps() {
 	local dev mask
 	case "$CORES" in
 		2) mask=3 ;;       # 0b11 — both cores
-		4) mask=f ;;
-		*) return 0 ;;
+		4) mask=f ;;       # 0b1111 — all 4 VPEs
+		*) mask=f ;;
 	esac
 
 	for dev in /sys/class/net/*; do

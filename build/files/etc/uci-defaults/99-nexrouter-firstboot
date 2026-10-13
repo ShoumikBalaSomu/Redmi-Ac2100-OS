@@ -214,22 +214,24 @@ for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | c
 		uci -q batch <<-EOF
 			set wireless.$dev.channel='149'
 			set wireless.$dev.htmode='VHT80'
-			set wireless.$dev.country='US'
+			set wireless.$dev.country='BD'
 			set wireless.$dev.mu_beamformer='1'
 			set wireless.$dev.su_beamformer='1'
+			set wireless.$dev.he_su_beamformer='1'
 			set wireless.$dev.beamformer_antennas='4'
 			set wireless.$dev.beamformee_antennas='4'
 			set wireless.$dev.ldpc='1'
 			set wireless.$dev.short_gi='1'
+			set wireless.$dev.amsdu='1'
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.disabled='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
-			set wireless.$dev.channel='auto'
+			set wireless.$dev.channel='6'
 			set wireless.$dev.htmode='HT40'
 			set wireless.$dev.noscan='1'
-			set wireless.$dev.country='US'
+			set wireless.$dev.country='BD'
 			set wireless.$dev.ldpc='1'
 			set wireless.$dev.short_gi='1'
 			set wireless.$dev.cell_density='0'
@@ -246,22 +248,34 @@ for iface in $(uci -q show wireless | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' 
 			set wireless.$iface.ssid='NexRouter_5G'
 			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
+			set wireless.$iface.ieee80211w='1'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
 			set wireless.$iface.ssid='NexRouter_2.4G'
 			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
+			set wireless.$iface.ieee80211w='1'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	fi
 done
 uci -q commit wireless
+
+uci -q batch <<-EOF
+	set system.@system[0].zonename='Asia/Dhaka'
+	set system.@system[0].timezone='<+06>-6'
+	commit system
+EOF
+
+passwd -d root 2>/dev/null || true
 
 # ===========================================================================
 # 9. Enable the NexRouter services

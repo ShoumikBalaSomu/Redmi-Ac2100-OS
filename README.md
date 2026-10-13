@@ -54,14 +54,20 @@ NexRouter provides two specialized build tracks:
 
 ### Verified Real-World Throughput (Redmi AC2100 Physical Test)
 
-| Metric | Mainline OpenWrt | Stock Xiaomi | NexRouter Extreme (MTK WHNAT) |
+| Metric | Stock Xiaomi | Stock OpenWrt (Untuned) | NexRouter OpenWrt 24.10.2 (Tuned) |
 |---|---|---|---|
-| **5 GHz WiFi Negotiated PHY** | 866 Mbps | 1.734 Gbps | **1.734 Gbps (4×4 VHT80)** |
-| **5 GHz Channel** | Dynamic (36–48) | 149 (Locked) | **149 (5.745 GHz UNII-3)** |
-| **iperf3 Host → Router** | ~200 Mbps (CPU bound) | ~500 Mbps | **795 Mbps (Peak 893 Mbps)** |
-| **iperf3 Router → Host** | ~210 Mbps (CPU bound) | ~550 Mbps | **830 Mbps (Peak 905 Mbps)** |
-| **CPU Utilization @ 800+ Mbps** | 100% (SoftIRQ saturated) | ~15% | **< 5% (Hardware PPE Offload)** |
-| **Web UI** | LuCI Standard | MiWiFi Closed App | **LuCI Argon Theme (EN) + SPA** |
+| **OS Base** | MiWiFi (Kernel 3.10 EOL) | OpenWrt Snapshot | **OpenWrt 24.10.2 (Kernel 6.6 LTS)** |
+| **2.4 GHz Hardware** | MT7603 | MT7603 | **Dedicated MT7603E (PCIe1, Channel 6)** |
+| **5 GHz Hardware** | MT7615 | MT7615 | **Dedicated MT7615E (PCIe0, Channel 149)** |
+| **5 GHz Channel & Width** | 149 (80 MHz) | Dynamic 36–48 | **149 Locked (80 MHz VHT80, 24 dBm)** |
+| **MU-MIMO & Beamforming** | Proprietary | Untuned | **4×4 MU-MIMO + Explicit/Implicit Beamforming** |
+| **Wi-Fi Security** | WPA2-PSK Only | WPA2-PSK Only | **WPA3-SAE / WPA2 Mixed (`sae-mixed` + PMF)** |
+| **iperf3 Upload (Host → Router)** | ~500 Mbps | ~200 Mbps | **512 Mbps (Peak 552 Mbps)** |
+| **iperf3 Download (Router → Host)**| ~550 Mbps | ~210 Mbps | **573 Mbps (Peak 609 Mbps)** |
+| **iperf3 4-Stream Parallel** | ~600 Mbps | ~220 Mbps | **893 Mbps (Peak 940 Mbps)** |
+| **Hardware Offload Engine** | MTK Closed HNAT | Disabled by default | **MT7621 PPE Flowtable Offload (`ft` on APs)** |
+| **CPU Interrupt Routing** | Core 0 Only | CPU0 Saturated | **4-VPE Partitioning (GMAC:CPU0, 2.4G:CPU1, 5G:CPU2/3)** |
+| **Web UI** | MiWiFi App | LuCI Standard | **LuCI Argon Glassmorphic (EN) + DoH GUI** |
 
 ---
 
