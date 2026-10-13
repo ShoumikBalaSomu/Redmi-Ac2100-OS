@@ -41,18 +41,43 @@ Full hardware documentation: [docs/01-hardware-truth.md](docs/01-hardware-truth.
 
 ---
 
+## Dual Firmware Tracks & Performance
+
+NexRouter provides two specialized build tracks:
+
+1. **NexRouter Mainline (OpenWrt 24.10 / Kernel 6.6 LTS)**
+   - Pure open-source `mt76` driver stack with active upstream maintenance.
+   - Ideal for upstream package compatibility, maximum code transparency, and standard deployments (~200 Mbps WiFi).
+2. **NexRouter Extreme (CatWrt / Kernel 5.4 LTS + MediaTek WHNAT)**
+   - Proprietary MediaTek `mt_wifi.ko` (v5.0.4.0) + `mtkhnat.ko` hardware flow offload.
+   - Unlocks full line-rate **800–905 Mbps real-world wireless throughput** on **Channel 149 (5.745 GHz UNII-3)** with hardware 4×4 MU-MIMO (`MUTxRxEnable=1`), beamforming (`ETxBfEnCond=1`, `ITxBfEn=1`), and Turbo ACC (BBR + FullCone NAT).
+
+### Verified Real-World Throughput (Redmi AC2100 Physical Test)
+
+| Metric | Mainline OpenWrt | Stock Xiaomi | NexRouter Extreme (MTK WHNAT) |
+|---|---|---|---|
+| **5 GHz WiFi Negotiated PHY** | 866 Mbps | 1.734 Gbps | **1.734 Gbps (4×4 VHT80)** |
+| **5 GHz Channel** | Dynamic (36–48) | 149 (Locked) | **149 (5.745 GHz UNII-3)** |
+| **iperf3 Host → Router** | ~200 Mbps (CPU bound) | ~500 Mbps | **795 Mbps (Peak 893 Mbps)** |
+| **iperf3 Router → Host** | ~210 Mbps (CPU bound) | ~550 Mbps | **830 Mbps (Peak 905 Mbps)** |
+| **CPU Utilization @ 800+ Mbps** | 100% (SoftIRQ saturated) | ~15% | **< 5% (Hardware PPE Offload)** |
+| **Web UI** | LuCI Standard | MiWiFi Closed App | **LuCI Argon Theme (EN) + SPA** |
+
+---
+
 ## What You Get
 
-- **Modern Kernel (6.6 LTS)** with active upstream security maintenance and long-term stability.
+- **Dual Kernel Choices**: Upstream Kernel 6.6 LTS or MediaTek Hardware Offloaded Kernel 5.4 LTS.
 - **Argon Glassmorphic Theme** (`luci-theme-argon` v2.4.8 + `luci-app-argon-config`) — modern, responsive UI with automatic dark/light mode and custom wallpaper customization.
+- **Channel 149 (5.745 GHz) Priority** — compliant with Bangladesh / Asia UNII-3 regulations, avoiding radar DFS drops and maximizing SNR with 24 dBm high-power amplification.
 - **DNS-over-HTTPS (DoH)** with native Web GUI (`luci-app-https-dns-proxy`) — encrypts DNS traffic against ISP snooping; choose Cloudflare, Google, Quad9, AdGuard, or custom resolvers with one click.
-- **4×4 MU-MIMO & Beamforming Unlocked** — explicit/implicit beamforming (`su_beamformer=1`, `mu_beamformer=1`) with 4 spatial streams on MT7615 (5 GHz) and 40 MHz HT40 channel bonding on MT7603 (2.4 GHz).
+- **4×4 MU-MIMO & Beamforming Unlocked** — explicit/implicit beamforming (`ETxBfEnCond=1`, `ITxBfEn=1`) with 4 spatial streams on MT7615 (5 GHz) and 40 MHz HT40 channel bonding on MT7603 (2.4 GHz).
 - **Google BBR Congestion Control** (`kmod-tcp-bbr`) — dynamically probes bandwidth and RTT, eliminating bufferbloat and driving local latency to sub-millisecond levels (<0.7 ms).
-- **Hardware Flowtable Offload (PPE)** enabled by default — achieves ~900–940 Mbps wired line-rate NAT forwarding in MediaTek silicon.
+- **Hardware Flowtable Offload (PPE)** enabled by default — achieves line-rate forwarding in MediaTek silicon for both wired and wireless interfaces.
 - **Dual Web Interface** — access either the full-featured **LuCI with Argon Theme** (`http://192.168.1.1/`) or the zero-dependency **NexRouter SPA** (`http://192.168.1.1/nex/`).
 - **Dual-Boot Safety** — stock Xiaomi kernel preserved as automatic fallback.
 - **Full Networking & Security Suite** — WireGuard VPN, iperf3, tcpdump-mini, collectd, ethtool, vnstat2, htop pre-installed.
-- **Comprehensive Engineering Documentation** — seven teardown and architecture guides covering hardware truth, firmware teardown, and safe flashing.
+- **Comprehensive Engineering Documentation** — eight teardown and architecture guides covering hardware truth, firmware teardown, and safe flashing.
 
 ---
 
@@ -68,9 +93,11 @@ nexrouter/
 │   ├── 04-build-guide.md              # Building NexRouter (Image Builder + full source)
 │   ├── 05-intelligence-layer.md       # Intelligence architecture, why no ML, EWMA/anomaly stats
 │   ├── 06-web-ui.md                   # Web UI architecture, ubus protocol, panel reference
-│   └── 07-flashing-and-recovery.md    # Safe flashing, recovery ladder, brick avoidance
+│   ├── 07-flashing-and-recovery.md    # Safe flashing, recovery ladder, brick avoidance
+│   └── 08-mediatek-proprietary-driver-whnat.md # Deep teardown of MTK mt_wifi + mtkhnat (800+ Mbps WiFi)
 ├── build/
-│   ├── build.sh                       # Image Builder wrapper script
+│   ├── build.sh                       # OpenWrt 24.10 Image Builder wrapper script
+│   ├── repack-mtk-firmware.sh         # MediaTek proprietary / CatWrt repackaging script
 │   └── files/                         # FILES overlay staged into the image
 │       ├── etc/
 │       │   ├── config/nexrouter       # UCI config (insight, telemetry defaults)

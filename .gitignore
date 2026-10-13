@@ -60,3 +60,8 @@ desktop.ini
 # ── Mock server scratch ───────────────────────────────────────────────────────
 webui/_mock.out
 webui/_mock.err
+
+# ── Extraction scratch & backups ──────────────────────────────────────────────
+analysis/*_extracted/
+build/custom_catwrt_*/
+backups/

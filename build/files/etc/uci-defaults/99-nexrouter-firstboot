@@ -55,6 +55,10 @@ EOF
 # throughput comparison rather than hard-coding a blind "on".
 uci -q batch <<-EOF
 	set network.globals.packet_steering='1'
+	set network.wan.proto='pppoe'
+	set network.wan.username='your_pppoe_username'
+	set network.wan.password='your_pppoe_password'
+	set network.wan.ipv6='auto'
 	commit network
 EOF
 
@@ -203,6 +207,7 @@ EOF
 # ===========================================================================
 # 8. WiFi: Maximum Throughput & MU-MIMO Beamforming (MT7603 + MT7615)
 # ===========================================================================
+[ -s /etc/config/wireless ] || wifi config
 for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
 	band="$(uci -q get wireless.$dev.band 2>/dev/null || echo '')"
 	if [ "$band" = "5g" ]; then
@@ -229,6 +234,30 @@ for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | c
 			set wireless.$dev.short_gi='1'
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.disabled='0'
+		EOF
+	fi
+done
+
+for iface in $(uci -q show wireless | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' | cut -d. -f2); do
+	dev="$(uci -q get wireless.$iface.device 2>/dev/null || echo '')"
+	band="$(uci -q get wireless.$dev.band 2>/dev/null || echo '')"
+	if [ "$band" = "5g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$iface.ssid='NexRouter_5G'
+			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.key='12345678'
+			set wireless.$iface.wmm='1'
+			set wireless.$iface.ieee80211k='1'
+			set wireless.$iface.ieee80211v='1'
+		EOF
+	elif [ "$band" = "2g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$iface.ssid='NexRouter_2.4G'
+			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.key='12345678'
+			set wireless.$iface.wmm='1'
+			set wireless.$iface.ieee80211k='1'
+			set wireless.$iface.ieee80211v='1'
 		EOF
 	fi
 done
