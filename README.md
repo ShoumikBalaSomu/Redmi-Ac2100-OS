@@ -100,7 +100,8 @@ nexrouter/
 │   ├── 05-intelligence-layer.md       # Intelligence architecture, why no ML, EWMA/anomaly stats
 │   ├── 06-web-ui.md                   # Web UI architecture, ubus protocol, panel reference
 │   ├── 07-flashing-and-recovery.md    # Safe flashing, recovery ladder, brick avoidance
-│   └── 08-mediatek-proprietary-driver-whnat.md # Deep teardown of MTK mt_wifi + mtkhnat (800+ Mbps WiFi)
+│   ├── 08-mediatek-proprietary-driver-whnat.md # Deep teardown of MTK mt_wifi + mtkhnat (800+ Mbps WiFi)
+│   └── 09-mu-mimo-technical-truth.md  # Low-level analysis of MU-MIMO vs SU-MIMO on OpenWrt MT7615
 ├── build/
 │   ├── build.sh                       # OpenWrt 24.10 Image Builder wrapper script
 │   ├── repack-mtk-firmware.sh         # MediaTek proprietary / CatWrt repackaging script
