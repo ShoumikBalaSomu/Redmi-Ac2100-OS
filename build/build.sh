@@ -34,7 +34,7 @@
 set -euo pipefail
 
 # ---- defaults -------------------------------------------------------------
-RELEASE="snapshot"
+RELEASE="24.10.2"
 TARGET="ramips/mt7621"
 PROFILE="xiaomi_redmi-router-ac2100"
 CLEAN=0
@@ -75,15 +75,15 @@ IB_DIR="$WORK/imagebuilder"
 #   kmod-mt7615e is pulled in by DEVICE_PACKAGES for this profile already.
 PACKAGES_REMOVE="-luci -luci-base -luci-lib-base -luci-theme-bootstrap \
 -luci-mod-admin-full -luci-proto-ppp -luci-proto-ipv6 -luci-app-firewall \
--luci-app-opkg -uhttpd -uhttpd-mod-ubus -px5g-wolfssl"
+-luci-app-opkg -px5g-wolfssl"
 
 PACKAGES_ADD=" \
   uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
   libubus libblobmsg-json jq curl ca-bundle ca-certificates \
   nlbwmon luci-lib-nixio \
-  kmod-nft-offload kmod-nft-flowtable kmod-nft-nat \
+  kmod-nft-offload kmod-nft-nat \
   kmod-ipt-conntrack kmod-ipt-raw kmod-nf-conntrack-netlink \
-  kmod-sched-cake kmod-sched-ctb kmod-sched-codel kmod-sched-fq-codel \
+  kmod-sched-cake \
   kmod-tun kmod-wireguard wireguard-tools \
   softflowd tcpdump-mini \
   luci-app-statistics collectd collectd-mod-load collectd-mod-memory \
@@ -112,17 +112,67 @@ if [ "$(uname -s)" != "Linux" ]; then
   exit 1
 fi
 
-for need in curl tar xz git make awk; do
+for need in curl tar git make awk; do
   command -v "$need" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $need" >&2; exit 1; }
 done
 
 mkdir -p "$WORK" "$OUT"
 
+# Ensure FindBin / JSON::PP / Time::Piece are available for Image Builder scripts
+PERL5_DIR="$WORK/perl5"
+mkdir -p "$PERL5_DIR"
+if ! perl -MFindBin -e 1 >/dev/null 2>&1; then
+  echo "==> bootstrapping local perl modules in $PERL5_DIR"
+  mkdir -p "$PERL5_DIR/JSON" "$PERL5_DIR/Time"
+  [ -f "$PERL5_DIR/FindBin.pm" ] || curl -sL "https://raw.githubusercontent.com/Perl/perl5/blead/dist/FindBin/lib/FindBin.pm" -o "$PERL5_DIR/FindBin.pm"
+  [ -f "$PERL5_DIR/JSON/PP.pm" ] || curl -sL "https://raw.githubusercontent.com/makamaka/JSON-PP/master/lib/JSON/PP.pm" -o "$PERL5_DIR/JSON/PP.pm"
+  if [ ! -f "$PERL5_DIR/Time/Piece.pm" ]; then
+    cat << 'EOF' > "$PERL5_DIR/Time/Piece.pm"
+package Time::Piece;
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use Exporter 'import';
+
+our $VERSION = '1.3401';
+our @EXPORT = qw(gmtime localtime);
+
+sub gmtime {
+    my $t = shift // CORE::time();
+    return bless { t => $t, is_gmt => 1 }, __PACKAGE__;
+}
+
+sub localtime {
+    my $t = shift // CORE::time();
+    return bless { t => $t, is_gmt => 0 }, __PACKAGE__;
+}
+
+sub datetime {
+    my $self = shift;
+    if ($self->{is_gmt}) {
+        return POSIX::strftime("%Y-%m-%dT%H:%M:%S", CORE::gmtime($self->{t}));
+    } else {
+        return POSIX::strftime("%Y-%m-%dT%H:%M:%S", CORE::localtime($self->{t}));
+    }
+}
+
+1;
+EOF
+  fi
+fi
+
+# Add local_root host tools (such as patch) and modules if present
+if [ -d "$WORK/local_root/usr/bin" ]; then
+  export PATH="$WORK/local_root/usr/bin:$PATH"
+fi
+export PERL5LIB="$PERL5_DIR:$WORK/local_root/usr/share/perl5/vendor_perl:$WORK/local_root/usr/share/perl5:$WORK/local_root/usr/lib64/perl5/vendor_perl:${PERL5LIB:-}"
+
 # ---- fetch the Image Builder ---------------------------------------------
+TARGET_SLUG="${TARGET//\//-}"
 if [ "$RELEASE" = "snapshot" ]; then
-  IB_URL="https://downloads.openwrt.org/snapshots/targets/${TARGET}/openwrt-imagebuilder-${TARGET}.Linux-x86_64.tar.xz"
+  IB_BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET}/openwrt-imagebuilder-${TARGET_SLUG}.Linux-x86_64"
 else
-  IB_URL="https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/openwrt-imagebuilder-${RELEASE}-${TARGET}.Linux-x86_64.tar.xz"
+  IB_BASE="https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/openwrt-imagebuilder-${RELEASE}-${TARGET_SLUG}.Linux-x86_64"
 fi
 
 if [ "$CLEAN" = "1" ]; then
@@ -132,12 +182,23 @@ fi
 
 if [ ! -d "$IB_DIR" ] && [ "$OFFLINE" = "0" ]; then
   echo "==> downloading Image Builder"
+  IB_ARCHIVE=""
+  if curl -fIs "${IB_BASE}.tar.zst" >/dev/null 2>&1; then
+    IB_URL="${IB_BASE}.tar.zst"
+    IB_ARCHIVE="$WORK/imagebuilder.tar.zst"
+  elif curl -fIs "${IB_BASE}.tar.xz" >/dev/null 2>&1; then
+    IB_URL="${IB_BASE}.tar.xz"
+    IB_ARCHIVE="$WORK/imagebuilder.tar.xz"
+  else
+    echo "ERROR: could not locate Image Builder at ${IB_BASE}.tar.{zst,xz}" >&2
+    exit 1
+  fi
   echo "    $IB_URL"
-  curl -fL --retry 3 --retry-delay 2 -o "$WORK/imagebuilder.tar.xz" "$IB_URL"
+  curl -fL --retry 3 --retry-delay 2 -o "$IB_ARCHIVE" "$IB_URL"
   echo "==> extracting"
   mkdir -p "$IB_DIR"
-  tar -C "$IB_DIR" --strip-components=1 -xf "$WORK/imagebuilder.tar.xz"
-  rm -f "$WORK/imagebuilder.tar.xz"
+  tar -C "$IB_DIR" --strip-components=1 -xf "$IB_ARCHIVE"
+  rm -f "$IB_ARCHIVE"
 fi
 
 if [ ! -x "$IB_DIR/Makefile" ] && [ ! -f "$IB_DIR/Makefile" ]; then
