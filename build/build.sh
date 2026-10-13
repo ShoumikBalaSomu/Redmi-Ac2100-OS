@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# NexRouter build script
+# ---------------------------------------------------------------------------
+# Builds a NexRouter sysupgrade image for the Xiaomi Redmi Router AC2100
+# (OpenWrt target: ramips/mt7621, profile: xiaomi_redmi-router-ac2100).
+#
+# Strategy: OpenWrt Image Builder + a FILES/ overlay.
+#
+#   Why not a full source build? A full OpenWrt toolchain build for this
+#   target needs ~25 GB of disk and hours of compile time. The Image Builder
+#   uses the same official prebuilt packages and kernel, produces an
+#   identically-signed squashfs/UBI sysupgrade image, and finishes in
+#   minutes. Every NexRouter customisation (configs, tuning scripts, web UI)
+#   is plain files, so it drops straight into FILES/ with no patching.
+#
+#   The full-source path is documented in docs/04-build-guide.md for anyone
+#   who needs to modify the kernel or the device tree itself.
+#
+# Requirements: Linux or WSL2. bash, curl, tar, xz, git, coreutils.
+#             ~10 GB free disk. The Image Builder does NOT run on bare Windows.
+#
+# Usage:  ./build.sh [--release RELEASE] [--clean] [--offline] [--jobs N]
+#
+#   --release   OpenWrt release to build against. Default: "snapshot".
+#               Use a stable tag such as "24.10.2" for daily driving and
+#               "snapshot" only if you want the newest kernel/mt76.
+#   --clean     remove the downloaded Image Builder before building
+#   --offline   reuse an already-downloaded Image Builder, do not re-fetch
+#   --jobs N    parallel jobs for make (default: nproc)
+#
+# Output:   out/*.bin  (sysupgrade + factory images)
+# ---------------------------------------------------------------------------
+set -euo pipefail
+
+# ---- defaults -------------------------------------------------------------
+RELEASE="snapshot"
+TARGET="ramips/mt7621"
+PROFILE="xiaomi_redmi-router-ac2100"
+CLEAN=0
+OFFLINE=0
+JOBS="$(nproc 2>/dev/null || echo 4)"
+
+# ---- argument parsing -----------------------------------------------------
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --release) RELEASE="$2"; shift 2 ;;
+    --clean)   CLEAN=1; shift ;;
+    --offline) OFFLINE=1; shift ;;
+    --jobs)    JOBS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+# ---- paths ----------------------------------------------------------------
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+WORK="$ROOT/build/.work"
+OUT="$ROOT/out"
+IB_DIR="$WORK/imagebuilder"
+
+# ---- package selection ----------------------------------------------------
+# Baseline: OpenWrt's default profile, minus things we replace, plus the
+# NexRouter feature set. Keep this list honest about flash AND RAM cost —
+# the ubi partition is a roomy 117.5 MiB, but runtime RAM is only 128 MiB
+# and that is the real constraint.
+#
+# Deliberately ABSENT, with reasons:
+#   luci*                      — replaced by the NexRouter SPA (see webui/)
+#   sqm-scripts / luci-app-sqm — CAKE tops out around ~150 Mbps on an 880 MHz
+#                                MIPS core; shipping it enabled would silently
+#                                halve a 500 Mbps link. fq_codel is used
+#                                instead (see etc/config/nexrouter).
+#   kmod-mt7615e is pulled in by DEVICE_PACKAGES for this profile already.
+PACKAGES_REMOVE="-luci -luci-base -luci-lib-base -luci-theme-bootstrap \
+-luci-mod-admin-full -luci-proto-ppp -luci-proto-ipv6 -luci-app-firewall \
+-luci-app-opkg -uhttpd -uhttpd-mod-ubus -px5g-wolfssl"
+
+PACKAGES_ADD=" \
+  uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
+  libubus libblobmsg-json jq curl ca-bundle ca-certificates \
+  nlbwmon luci-lib-nixio \
+  kmod-nft-offload kmod-nft-flowtable kmod-nft-nat \
+  kmod-ipt-conntrack kmod-ipt-raw kmod-nf-conntrack-netlink \
+  kmod-sched-cake kmod-sched-ctb kmod-sched-codel kmod-sched-fq-codel \
+  kmod-tun kmod-wireguard wireguard-tools \
+  softflowd tcpdump-mini \
+  luci-app-statistics collectd collectd-mod-load collectd-mod-memory \
+    collectd-mod-network collectd-mod-interface collectd-mod-iwinfo \
+  ethtool iperf3 vnstat2 htop nano less procps-ng-ps procps-ng-free \
+  kmod-usb-core kmod-usb2 kmod-usb3 \
+  odhcpd-ipv6only odhcp6c \
+  irqbalance \
+  block-mount e2fsprogs kmod-fs-ext4"
+
+# NOTE on kmod-usb*: this board has NO USB port (verified against the DTS).
+# They are listed only because block-mount is useful for future boards sharing
+# this image recipe. If you build strictly for the AC2100, remove them to save
+# ~700 KiB of flash. Left in, commented here rather than silently shipped.
+
+# ---- preflight ------------------------------------------------------------
+echo "==> NexRouter build"
+echo "    release : $RELEASE"
+echo "    target  : $TARGET"
+echo "    profile : $PROFILE"
+echo "    jobs    : $JOBS"
+
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "ERROR: the OpenWrt Image Builder requires Linux." >&2
+  echo "       On Windows, run this inside WSL2 (wsl --install) or a container." >&2
+  exit 1
+fi
+
+for need in curl tar xz git make awk; do
+  command -v "$need" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $need" >&2; exit 1; }
+done
+
+mkdir -p "$WORK" "$OUT"
+
+# ---- fetch the Image Builder ---------------------------------------------
+if [ "$RELEASE" = "snapshot" ]; then
+  IB_URL="https://downloads.openwrt.org/snapshots/targets/${TARGET}/openwrt-imagebuilder-${TARGET}.Linux-x86_64.tar.xz"
+else
+  IB_URL="https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/openwrt-imagebuilder-${RELEASE}-${TARGET}.Linux-x86_64.tar.xz"
+fi
+
+if [ "$CLEAN" = "1" ]; then
+  echo "==> --clean: removing $IB_DIR"
+  rm -rf "$IB_DIR"
+fi
+
+if [ ! -d "$IB_DIR" ] && [ "$OFFLINE" = "0" ]; then
+  echo "==> downloading Image Builder"
+  echo "    $IB_URL"
+  curl -fL --retry 3 --retry-delay 2 -o "$WORK/imagebuilder.tar.xz" "$IB_URL"
+  echo "==> extracting"
+  mkdir -p "$IB_DIR"
+  tar -C "$IB_DIR" --strip-components=1 -xf "$WORK/imagebuilder.tar.xz"
+  rm -f "$WORK/imagebuilder.tar.xz"
+fi
+
+if [ ! -x "$IB_DIR/Makefile" ] && [ ! -f "$IB_DIR/Makefile" ]; then
+  echo "ERROR: Image Builder not present at $IB_DIR" >&2
+  echo "       Re-run without --offline, or check the release name." >&2
+  exit 1
+fi
+
+# ---- assemble the FILES/ overlay -----------------------------------------
+# Everything under build/files/ lands verbatim at / on the device.
+FILES="$WORK/files"
+rm -rf "$FILES"
+mkdir -p "$FILES"
+
+echo "==> staging overlay files"
+cp -a "$ROOT/build/files/." "$FILES/"
+
+# Ship the built web UI if it exists; otherwise build it.
+if [ -d "$ROOT/webui/dist" ] && [ -n "$(ls -A "$ROOT/webui/dist" 2>/dev/null)" ]; then
+  echo "==> using prebuilt web UI from webui/dist"
+  mkdir -p "$FILES/www/nex"
+  cp -a "$ROOT/webui/dist/." "$FILES/www/nex/"
+else
+  echo "==> webui/dist is empty — attempting to build the web UI"
+  # The web UI has ZERO dependencies, so there is no package-lock.json and
+  # `npm ci` would fail outright (it requires a lockfile). Invoke the build
+  # script directly with node — that is all `npm run build` would do anyway.
+  if command -v node >/dev/null 2>&1 && [ -f "$ROOT/webui/build.mjs" ]; then
+    ( cd "$ROOT/webui" && node build.mjs ) || {
+      echo "ERROR: web UI build failed." >&2
+      echo "       Fix it, or pre-populate webui/dist and re-run." >&2
+      exit 1
+    }
+    mkdir -p "$FILES/www/nex"
+    cp -a "$ROOT/webui/dist/." "$FILES/www/nex/"
+  else
+    echo "ERROR: node not available and webui/dist is empty." >&2
+    echo "       The image cannot be assembled without the web UI." >&2
+    exit 1
+  fi
+fi
+
+# Ship the OUI vendor table used by the intelligence layer. If it is already
+# present (committed or previously generated) use it; otherwise try to build it
+# from the IEEE registry. A missing table is NOT fatal — device vendor names
+# simply show as "unknown" — so this step warns rather than aborting the build.
+if [ ! -s "$FILES/usr/lib/nexrouter/oui.txt" ]; then
+  echo "==> OUI table absent — generating from the IEEE registry"
+  if command -v node >/dev/null 2>&1 && [ -f "$ROOT/tools/build-oui.mjs" ]; then
+    mkdir -p "$FILES/usr/lib/nexrouter"
+    if node "$ROOT/tools/build-oui.mjs" --out "$FILES/usr/lib/nexrouter/oui.txt"; then
+      echo "    OUI table: $(wc -l < "$FILES/usr/lib/nexrouter/oui.txt") entries"
+    else
+      echo "    WARNING: could not build the OUI table (network?)." >&2
+      echo "             Vendor names will show as 'unknown'. To include them," >&2
+      echo "             run tools/build-oui.mjs on a networked host and commit the" >&2
+      echo "             result to build/files/usr/lib/nexrouter/oui.txt." >&2
+    fi
+  else
+    echo "    WARNING: node unavailable; skipping OUI table generation." >&2
+  fi
+fi
+
+# Make the shipped scripts executable — cp -a preserves mode, but files created
+# by tooling on Windows lose it, and a non-executable uci-defaults script
+# silently does nothing.
+echo "==> normalising executable bits"
+find "$FILES" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
+  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' \) -exec chmod 0755 {} +
+find "$FILES" -type f -path '*/config/*' -exec chmod 0644 {} +
+
+# Record build provenance inside the image so it is self-identifying.
+mkdir -p "$FILES/etc"
+cat > "$FILES/etc/nexrouter-release" <<EOF
+NEXROUTER_VERSION=$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)
+BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+OPENWRT_RELEASE=$RELEASE
+TARGET=$TARGET
+PROFILE=$PROFILE
+GIT_COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+GIT_DIRTY=$(git -C "$ROOT" diff --quiet 2>/dev/null && echo no || echo yes)
+EOF
+
+# ---- build ----------------------------------------------------------------
+echo "==> running Image Builder"
+cd "$IB_DIR"
+make image \
+  PROFILE="$PROFILE" \
+  PACKAGES="$PACKAGES_ADD $PACKAGES_REMOVE" \
+  FILES="$FILES" \
+  BIN_DIR="$OUT" \
+  EXTRA_IMAGE_NAME="nexrouter" \
+  -j"$JOBS"
+
+# ---- report ---------------------------------------------------------------
+echo
+echo "==> build complete"
+if compgen -G "$OUT/*.bin" > /dev/null; then
+  echo "    images:"
+  for f in "$OUT"/*.bin; do
+    printf '      %-70s %10s bytes  sha256:%s\n' \
+      "$(basename "$f")" "$(stat -c%s "$f")" "$(sha256sum "$f" | cut -c1-16)"
+  done
+  echo
+  echo "    Flash with the *sysupgrade* image:"
+  echo "      sysupgrade -n /tmp/nexrouter-...-sysupgrade.bin"
+  echo "    (-n wipes the old overlay; do NOT omit it when coming from stock"
+  echo "     or from a different distribution.)"
+else
+  echo "ERROR: no images produced in $OUT" >&2
+  exit 1
+fi

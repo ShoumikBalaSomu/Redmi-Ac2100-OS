@@ -1,0 +1,50 @@
+# ===========================================================================
+# NexRouter UCI configuration
+# ===========================================================================
+# Installed to /etc/config/nexrouter. Read by the rpcd plugin and by
+# /usr/libexec/nexrouter/insight-query.
+#
+# Every option here is a plain UCI value, so it can also be changed with the
+# usual `uci set` / `uci commit` commands or from the web UI. Nothing in
+# NexRouter keeps state outside UCI except the statistics caches under
+# /usr/lib/nexrouter/state.
+# ===========================================================================
+
+config core 'core'
+	option enabled '1'
+	# Surface the build provenance recorded at image build time.
+	option show_build_info '1'
+
+config insight 'insight'
+	# Master switch for the on-device intelligence layer. When disabled,
+	# no baselines are collected and the devices/anomalies API returns
+	# empty results. Default ON because it costs close to nothing.
+	option enabled '1'
+
+	# 'heuristic' is the only mode that exists on this hardware. The field
+	# is kept explicit rather than removed so that the UI can state plainly
+	# that no ML model runs on the router. See docs/05-intelligence-layer.md.
+	option mode 'heuristic'
+
+	# Baseline refresh window in minutes. The init script runs a tick on
+	# this interval. 15 minutes is a reasonable trade between resolution
+	# and cost on an 880 MHz core.
+	option window '15'
+
+	# NetFlow export to an external collector. OFF by default: enabling it
+	# means traffic metadata leaves the device, which must be the user's
+	# explicit decision. The setter also refuses to enable export unless a
+	# collector address has been configured.
+	option export '0'
+
+	# How long to keep a device in the baseline before forgetting it, in
+	# days. Bounds the size of the state file on 128 MiB RAM hardware.
+	option retention_days '30'
+
+config telemetry 'telemetry'
+	# No external telemetry of any kind. This project does not phone home,
+	# does not report statistics to any server, and has no update check
+	# that transmits device identity. Stated in config so it is auditable
+	# rather than merely promised in prose.
+	option phone_home '0'
+	option crash_reporting '0'

@@ -1,0 +1,55 @@
+# NexRouter line-ending and attribute rules
+# ==========================================
+# This project ships files that execute on an OpenWrt router, where /bin/sh is
+# busybox ash. A CRLF line ending is not cosmetic there — it is fatal:
+#
+#   * A shell script whose shebang line ends "\r\n" is executed as
+#     "/bin/sh\r", which does not exist, so the script fails to run at all.
+#   * `uci-defaults` and `init.d` scripts with CRLF can mis-parse or silently
+#     no-op.
+#   * The tab-separated OUI table (oui.txt) parsed by awk/jq would carry a
+#     trailing \r on every vendor name.
+#
+# Git's core.autocrlf can convert LF to CRLF on checkout (the default on many
+# Windows setups, as the build here warned). These rules pin the files that MUST
+# stay LF regardless of the cloner's platform, so `build/build.sh` works for
+# anyone who clones on Windows/WSL/Linux. Text that is only ever read by humans
+# or by Node is left to auto.
+
+# Default: let Git normalise text files to LF in the repo, and do not surprise
+# anyone on checkout.
+* text=auto eol=lf
+
+# ── Must be LF: executed on the router or by a POSIX shell ───────────────────
+*.sh          text eol=lf
+build/files/** text eol=lf
+# The firmware overlay files have no extension but are shell/UCI/JSON:
+99-nexrouter-firstboot text eol=lf
+nexrouter              text eol=lf
+nexrouter-core         text eol=lf
+nexrouter-insight      text eol=lf
+insight-query          text eol=lf
+config/nexrouter       text eol=lf
+
+# ── Must be LF: machine-parsed data ──────────────────────────────────────────
+# oui.txt is TAB-separated and read field-by-field; a trailing \r corrupts it.
+*.tsv         text eol=lf
+oui.txt       text eol=lf
+*.csv         text eol=lf
+*.json        text eol=lf
+
+# ── Source read by Node / the browser (LF keeps diffs clean) ─────────────────
+*.js          text eol=lf
+*.mjs         text eol=lf
+*.css         text eol=lf
+*.html        text eol=lf
+*.md          text eol=lf
+
+# ── Firmware images and other true binaries: never touch ─────────────────────
+*.bin         binary
+*.img         binary
+*.png         binary
+*.jpg         binary
+*.ico         binary
+*.gz          binary
+*.xz          binary

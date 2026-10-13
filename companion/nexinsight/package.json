@@ -1,0 +1,22 @@
+{
+  "name": "nexinsight",
+  "version": "0.1.0",
+  "description": "Off-router analysis companion for NexRouter — NetFlow v5 collection, aggregation, anomaly detection and traffic classification",
+  "type": "module",
+  "bin": {
+    "nexinsight": "./collector.mjs"
+  },
+  "scripts": {
+    "start": "node collector.mjs listen",
+    "collect": "node collector.mjs listen",
+    "report": "node collector.mjs report",
+    "train": "node collector.mjs train",
+    "test": "node --test test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["netflow", "openwrt", "nexrouter", "traffic-analysis"],
+  "license": "MIT",
+  "notes": "Zero runtime dependencies by design. Uses only Node.js built-in modules (dgram, fs, path, http, crypto, net). Storage is append-only JSONL with in-memory aggregation — no database driver needed."
+}

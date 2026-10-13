@@ -1,0 +1,176 @@
+#!/bin/sh /etc/rc.common
+# ===========================================================================
+# nexrouter-core — boot-time performance provisioning
+# ===========================================================================
+# Applies the tuning that cannot be expressed purely in UCI config:
+#
+#   1. IRQ affinity. On this dual-core SoC the single biggest software-side
+#      win is keeping the ethernet interrupt and the WiFi interrupts on
+#      different cores, so that a busy radio does not stall the wired path.
+#      The kernel does not do this well by default.
+#
+#   2. Per-CPU softirq balance for the ethernet device (RPS/RFS), which
+#      complements UCI's packet_steering.
+#
+#   3. Verifying that the offload configuration actually took effect, and
+#      logging a clear warning when hardware flow offload was requested but
+#      the nftables flowtable is not present. Silent non-offload is exactly
+#      how people end up convinced OpenWrt is slower than stock.
+#
+# All of this is idempotent and reversible; it writes only to /proc, /sys and
+# logread. It does NOT touch the bootloader, PLL registers or flash.
+#
+# IMPORTANT — what this service does NOT do:
+#   It does not overclock. MT7621 has no runtime cpufreq driver and the CPU
+#   clock is not present in the device tree; it is set by the bootloader from
+#   PLL registers. There is no supported way to change it from a running
+#   system, and attempting it risks an unrecoverable brick. See
+#   docs/03-performance-reality.md and the `overclock` API method, which is
+#   report-only by design.
+# ===========================================================================
+
+START=99
+STOP=01
+
+CORES="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
+[ "${CORES:-0}" -ge 2 ] 2>/dev/null || CORES=2
+
+log() { logger -t nexrouter-core -- "$*"; }
+
+# ---- IRQ affinity ---------------------------------------------------------
+# Strategy: pinned interrupts that belong to the wired path go to core 0;
+# interrupts that belong to the PCIe radios go to core 1. The WiFi drivers on
+# this board (mt7603 / mt7615) are the heavier interrupt sources, so giving
+# them their own core is the higher-value split.
+#
+# The mask values assume 2 cores: core0 = 0x1, core1 = 0x2. If a future SoC
+# reports more cores we simply fall back to not pinning, rather than writing
+# a wrong mask.
+set_affinity() {
+	local mask="$1"; shift
+	local irq
+	for irq in "$@"; do
+		[ -w "/proc/irq/$irq/smp_affinity" ] || continue
+		printf '%s' "$mask" > "/proc/irq/$irq/smp_affinity" 2>/dev/null
+	done
+}
+
+configure_irqs() {
+	[ "$CORES" -eq 2 ] || { log "not pinning IRQs: $CORES cores detected, expected 2"; return; }
+
+	local wired="" radio=""
+	while read -r line; do
+		num="${line%%:*}"
+		num="$(printf '%s' "$num" | tr -d ' ')"
+		case "$num" in ''|*[!0-9]*) continue ;; esac
+		name="$(printf '%s' "$line" | awk '{print $NF}')"
+		case "$name" in
+			# Wired path: the MT7621 ethernet/GDMA and the MT7530 switch
+			eth*|mt7621-eth*|gsw*|gdma*|hsdma*|1e100000*)
+				wired="$wired $num" ;;
+			# PCIe radios: mt76 exposes per-radio IRQs
+			pcie*|mt76*|rai*|rax*|ra0*|apcli*|1e140000*|1e150000*)
+				radio="$radio $num" ;;
+		esac
+	done < /proc/interrupts
+
+	[ -n "$wired" ] && set_affinity 1 $wired
+	[ -n "$radio" ] && set_affinity 2 $radio
+
+	log "IRQ affinity: wired[$(printf '%s' "$wired" | wc -w)] -> core0, radio[$(printf '%s' "$radio" | wc -w)] -> core1"
+}
+
+# ---- RPS for the wired interface ------------------------------------------
+# Receive Packet Steering lets software spread RX processing across cores for
+# devices without multi-queue hardware. This board's GMACs are single-queue,
+# so RPS is the only way to get the second core involved in RX.
+configure_rps() {
+	local dev mask
+	case "$CORES" in
+		2) mask=3 ;;       # 0b11 — both cores
+		4) mask=f ;;
+		*) return 0 ;;
+	esac
+
+	for dev in /sys/class/net/*; do
+		d="$(basename "$dev")"
+		# Skip loopback, bridges/vlans and WiFi virtual interfaces —
+		# RPS belongs on the physical RX device.
+		case "$d" in
+			lo|br-*|*.*) continue ;;
+		esac
+		[ -w "$dev/queues/rx-0/rps_cpus" ] || continue
+		printf '%s' "$mask" > "$dev/queues/rx-0/rps_cpus" 2>/dev/null
+		# A modest flow-limit backlog keeps a single busy flow from
+		# monopolising the queue.
+		[ -w "$dev/queues/rx-0/rps_flow_cnt" ] && \
+			printf '512' > "$dev/queues/rx-0/rps_flow_cnt" 2>/dev/null
+	done
+
+	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && \
+		printf '4096' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+}
+
+# ---- offload verification -------------------------------------------------
+# Report whether hardware flow offload is genuinely active. A user who
+# enabled it in config but gets no benefit needs to be told why, not left
+# guessing.
+verify_offload() {
+	local hwo swo
+	hwo="$(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
+	swo="$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)"
+
+	if [ "$hwo" = "1" ] && [ "$swo" != "1" ]; then
+		log "WARNING: hardware flow offload is enabled without software offload; the flowtable fallback is missing"
+	fi
+
+	# nft support for the offload path
+	if [ "$hwo" = "1" ] || [ "$swo" = "1" ]; then
+		if ! nft list ruleset 2>/dev/null | grep -q 'flowtable'; then
+			log "WARNING: flow offload requested but no nftables flowtable found in the ruleset — offload is NOT active"
+		else
+			log "nftables flowtable present; software offload active$([ "$hwo" = "1" ] && printf ', hardware offload requested')"
+		fi
+	fi
+
+	# The PPE hardware flowtable stats file is the real evidence.
+	if [ -r /proc/net/stat/nf_flowtable ]; then
+		hw_flows="$(awk 'NR==2 {print $1+0}' /proc/net/stat/nf_flowtable 2>/dev/null)"
+		[ -n "$hw_flows" ] && log "hardware-offloaded flows: $hw_flows"
+	fi
+}
+
+# ---- SQM guard ------------------------------------------------------------
+# Warn loudly if CAKE is running, because on this SoC it silently caps the
+# link near ~150 Mbps and users frequently enable it without realising.
+guard_sqm() {
+	local dev qd
+	dev="$(uci -q get network.wan.device 2>/dev/null)"
+	[ -n "$dev" ] || dev="$(uci -q get network.wan.ifname 2>/dev/null)"
+	[ -n "$dev" ] || return 0
+	qd="$(tc qdisc show dev "$dev" 2>/dev/null | head -n1)"
+	case "$qd" in
+		*cake*) log "CAKE shaping is active on $dev — expect a throughput ceiling near ~150 Mbps on this SoC" ;;
+	esac
+}
+
+start() {
+	log "starting (cores=$CORES, version=$(uci -q get nexrouter.core.enabled 2>/dev/null || echo n/a))"
+	configure_irqs
+	configure_rps
+	verify_offload
+	guard_sqm
+	log "boot-time tuning applied"
+}
+
+stop() {
+	# Nothing to undo: affinity and RPS are runtime state that does not
+	# persist across reboot. Deliberately not reverting to defaults here,
+	# because a stop during a service restart would briefly un-pin IRQs
+	# under load.
+	:
+}
+
+restart() {
+	start
+}

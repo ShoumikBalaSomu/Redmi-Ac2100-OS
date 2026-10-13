@@ -1,0 +1,81 @@
+{
+	"nexrouter-readonly": {
+		"description": "NexRouter dashboard — read-only access",
+		"read": {
+			"ubus": {
+				"nexrouter": [
+					"overview",
+					"performance",
+					"profiles",
+					"wifi",
+					"overclock",
+					"recovery",
+					"export_get",
+					"insight_devices",
+					"insight_anomalies",
+					"insight_config"
+				],
+				"system": [ "board", "info", "nandupgrade" ],
+				"network.device": [ "status" ],
+				"network.interface": [ "status" ],
+				"network.interface.wan": [ "status" ],
+				"network.interface.lan": [ "status" ],
+				"iwinfo": [ "info", "scanlist", "freqlist", "txpowerlist", "countrylist" ],
+				"file": [ "stat" ],
+				"luci-rpc": [ "getDHCPLeases", "getConntrackList", "getProcessStat" ],
+				"nlbwmon": [ "*" ],
+				"hostapd": [ "get_status" ]
+			}
+		}
+	},
+
+	"nexrouter-write": {
+		"description": "NexRouter dashboard — configuration changes",
+		"write": {
+			"ubus": {
+				"nexrouter": [
+					"apply_profile",
+					"set_offload",
+					"export_set",
+					"insight_config_set"
+				]
+			}
+		}
+	},
+
+	"nexrouter-admin": {
+		"description": "Full administrative access (root)",
+		"read": {
+			"ubus": {
+				"nexrouter": [ "*" ],
+				"system": [ "*" ],
+				"network": [ "*" ],
+				"network.device": [ "*" ],
+				"network.interface": [ "*" ],
+				"network.wireless": [ "*" ],
+				"uci": [ "*" ],
+				"file": [ "*" ],
+				"iwinfo": [ "*" ],
+				"service": [ "*" ],
+				"log": [ "*" ],
+				"nlbwmon": [ "*" ],
+				"hostapd": [ "*" ],
+				"luci-rpc": [ "*" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"nexrouter": [ "*" ],
+				"system": [ "*" ],
+				"network": [ "*" ],
+				"network.device": [ "*" ],
+				"network.wireless": [ "*" ],
+				"uci": [ "*" ],
+				"file": [ "*" ],
+				"service": [ "*" ],
+				"log": [ "*" ],
+				"nlbwmon": [ "*" ]
+			}
+		}
+	}
+}

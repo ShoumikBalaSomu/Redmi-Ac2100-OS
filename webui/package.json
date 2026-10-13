@@ -1,0 +1,18 @@
+{
+  "name": "nexrouter-webui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NexRouter dashboard — a dependency-free SPA for the Redmi Router AC2100, served by uhttpd and backed by rpcd/ubus JSON-RPC.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node dev/mock-ubus.mjs",
+    "check": "node --test test/",
+    "clean": "node build.mjs --clean"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

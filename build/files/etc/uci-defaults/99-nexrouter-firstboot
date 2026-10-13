@@ -1,0 +1,249 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# NexRouter first-boot provisioning (UCI defaults hook)
+# ---------------------------------------------------------------------------
+# OpenWrt runs every executable script in /etc/uci-defaults once on first boot,
+# then deletes it. This is where NexRouter applies its baseline: performance
+# offloads, qdisc defaults, the web UI, DNS hardening and the telemetry
+# exporter.
+#
+# DESIGN RULES enforced here (see docs/03-performance-reality.md):
+#   1. Hardware flow offload ON by default. This is the single change that
+#      closes the gap with the vendor's proprietary HNAT driver.
+#   2. SQM/CAKE OFF by default. CAKE is single-threaded and tops out near
+#      ~150 Mbps on this 880 MHz core. Enabling it would silently cut a
+#      500 Mbps link to a third of its speed. fq_codel is used instead: it
+#      gives most of the bufferbloat benefit at a fraction of the CPU cost.
+#      A "bufferbloat mode" toggle in the UI switches to CAKE knowingly.
+#   3. No on-device neural inference. Ever. See docs/05-intelligence-layer.md
+#      for what the intelligence layer actually does and why.
+#   4. Nothing is sent off the device unless the user enables it.
+# ---------------------------------------------------------------------------
+
+[ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
+
+echo "nexrouter: first-boot provisioning (${NEXROUTER_VERSION:-dev})"
+
+# ===========================================================================
+# 1. Firewall: nftables flow offloading
+# ===========================================================================
+# Software flow offloading creates an nftables flowtable so that established
+# flows skip per-packet rule evaluation. Hardware flow offloading then hands
+# eligible flows to the MT7621 PPE (packet processing engine) — the same
+# silicon the vendor HNAT driver uses — so forwarding happens without CPU
+# involvement at all.
+#
+# Hardware offload requires software offload as a fallback, because the PPE
+# flow table is small and cannot hold every connection.
+uci -q batch <<-EOF
+	set firewall.@defaults[0].flow_offloading='1'
+	set firewall.@defaults[0].flow_offloading_hw='1'
+	set firewall.@defaults[0].syn_flood='1'
+	set firewall.@defaults[0].synflood_rate='100'
+	set firewall.@defaults[0].input='REJECT'
+	set firewall.@defaults[0].output='ACCEPT'
+	set firewall.@defaults[0].forward='REJECT'
+	commit firewall
+EOF
+
+# ===========================================================================
+# 2. Network: offload-friendly defaults, no SQM
+# ===========================================================================
+# packet_steering spreads softirq work across both cores. It measurably helps
+# on this dual-core SoC, but it was broken in some snapshots around Feb 2023
+# (openwrt/openwrt#12962), so the UI surfaces it as a toggle with a live
+# throughput comparison rather than hard-coding a blind "on".
+uci -q batch <<-EOF
+	set network.globals.packet_steering='1'
+	commit network
+EOF
+
+# fq_codel on the WAN egress qdisc: fair queuing plus CoDel AQM. This is the
+# cheap 90% of what CAKE offers, without the single-threaded shaping cost.
+cat > /etc/hotplug.d/iface/20-nexrouter-qdisc <<'QEOF'
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
+dev="$(uci -q get network.wan.device)"
+[ -n "$dev" ] || exit 0
+# Replace the default pfifo_fast/fq_codel with an explicit fq_codel tuned for
+# a ~1 Gbps capable path. target 5ms / interval 100ms are the CoDel defaults
+# and are correct for a low-latency home link.
+tc qdisc replace dev "$dev" root fq_codel \
+   limit 10240 flows 1024 quantum 3028b target 5ms interval 100ms \
+   memory_limit 32Mb ecn 2>/dev/null
+QEOF
+chmod 0755 /etc/hotplug.d/iface/20-nexrouter-qdisc
+
+# ===========================================================================
+# 3. Kernel / sysctl tuning
+# ===========================================================================
+# Conservative, reversible, and targeted at what this SoC actually bottlenecks
+# on: connection-tracking table size, TCP buffer autotuning, and dropping
+# martians. Nothing here overclocks or changes clocks.
+cat > /etc/sysctl.d/99-nexrouter.conf <<'SEOF'
+# --- conntrack -------------------------------------------------------------
+# The PPE flow table is small; anything not offloaded falls back to software
+# conntrack. A 65536-entry table on 128 MiB RAM costs ~10 MiB worst case and
+# prevents table-full drops under heavy P2P / many-client load.
+net.netfilter.nf_conntrack_max=65536
+net.netfilter.nf_conntrack_buckets=16384
+net.netfilter.nf_conntrack_tcp_timeout_established=43200
+net.netfilter.nf_conntrack_udp_timeout=30
+net.netfilter.nf_conntrack_udp_timeout_stream=120
+
+# --- TCP -------------------------------------------------------------------
+# rmem/wmem max 8 MiB is plenty for a 1 Gbps link with ~10 ms RTT and keeps
+# autotuning effective for high-bandwidth transfers without wasting RAM on
+# short-lived connections.
+net.core.rmem_max=8388608
+net.core.wmem_max=8388608
+net.ipv4.tcp_rmem=4096 131072 8388608
+net.ipv4.tcp_wmem=4096 131072 8388608
+net.core.netdev_max_backlog=4096
+net.core.netdev_budget=600
+net.core.somaxconn=1024
+net.ipv4.tcp_congestion_control=cubic
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_fin_timeout=15
+
+# --- filtering -------------------------------------------------------------
+net.ipv4.conf.all.rp_filter=1
+net.ipv4.conf.default.rp_filter=1
+net.ipv4.conf.all.log_martians=1
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.icmp_echo_ignore_broadcasts=1
+net.ipv4.icmp_ignore_bogus_error_responses=1
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.all.accept_source_route=0
+
+# --- VM --------------------------------------------------------------------
+# The overlay lives on NAND; keep dirty pages small so a burst of writes
+# cannot stall the network stack, and let the kernel reclaim early.
+vm.swappiness=10
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
+vm.min_free_kbytes=8192
+SEOF
+
+sysctl --system >/dev/null 2>&1
+
+# ===========================================================================
+# 4. Web UI: serve the NexRouter SPA from uhttpd
+# ===========================================================================
+# uhttpd already exposes /ubus for JSON-RPC. We add /nex as an alias to the
+# static SPA so the UI and its API share one origin (no CORS, no second
+# listener, and the existing rpcd session auth applies unchanged).
+if [ -d /www/nex ]; then
+	uci -q batch <<-EOF
+		add_list uhttpd.main.interpret_suffix='/nex'
+		set uhttpd.main.index_page='/nex/index.html'
+		add_list uhttpd.main.alias '/nex=/www/nex'
+		set uhttpd.main.rfc1918_filter='0'
+		set uhttpd.main.redirect_https='1'
+		set uhttpd.main.max_requests='4'
+		set uhttpd.main.script_timeout='60'
+		commit uhttpd
+	EOF
+
+	# rpcd needs the ubus-http bridge and a generous session timeout so the
+	# dashboard does not get logged out mid-use.
+	uci -q batch <<-EOF
+		set rpcd.@login[0].timeout='3600'
+		commit rpcd
+	EOF
+fi
+
+# ===========================================================================
+# 5. DNS hardening (no third-party resolver by default)
+# ===========================================================================
+# Only enable DoT if the user has explicitly configured an upstream. Shipping
+# a hard-coded third-party resolver would be a privacy decision made on the
+# user's behalf, which is exactly what this project should not do.
+uci -q batch <<-EOF
+	set dhcp.@dnsmasq[0].rebind_protection='1'
+	set dhcp.@dnsmasq[0].rebind_localhost='1'
+	set dhcp.@dnsmasq[0].localservice='1'
+	set dhcp.@dnsmasq[0].nonwildcard='1'
+	set dhcp.@dnsmasq[0].cachesize='2048'
+	set dhcp.@dnsmasq[0].min_cache_ttl='300'
+	set dhcp.@dnsmasq[0].negcache='1'
+	commit dhcp
+EOF
+
+# ===========================================================================
+# 6. Telemetry exporter — OFF by default
+# ===========================================================================
+# softflowd exports NetFlow to an external collector where real analysis can
+# happen. It costs ~2-5% CPU. It is disabled until the user points it at a
+# collector of their choosing, because turning it on means traffic metadata
+# leaves the device.
+uci -q batch <<-EOF
+	set softflowd.@softflowd[0].enabled='0'
+	commit softflowd
+EOF
+
+# ===========================================================================
+# 7. Intelligence layer — heuristics only, ON by default; export OFF
+# ===========================================================================
+# This uci-defaults hook runs AFTER /etc/config/nexrouter is installed, so the
+# values set here override the file's defaults on first boot. They must match
+# the documented behaviour or the override silently wins: the intelligence layer
+# is ON (it costs ~nothing — a 15-minute reniced poll — and nothing leaves the
+# device), while NetFlow export is OFF (that is the one thing that sends traffic
+# metadata off the router, so it stays a deliberate user choice).
+uci -q batch <<-EOF
+	set nexrouter.core.enabled='1'
+	set nexrouter.insight.enabled='1'
+	set nexrouter.insight.mode='heuristic'
+	set nexrouter.insight.export='0'
+	set nexrouter.telemetry.phone_home='0'
+	set nexrouter.telemetry.crash_reporting='0'
+	commit nexrouter
+EOF
+
+# ===========================================================================
+# 8. WiFi: sane radio defaults for MT7603 + MT7615
+# ===========================================================================
+# NOTE: mt76 still trails the vendor driver on 5 GHz. These settings do not
+# pretend otherwise — they just avoid the common misconfigurations.
+# Country code is left UNSET on purpose: setting it wrong is a regulatory
+# problem for the user, and the UI asks for it explicitly on first run.
+i=0
+for radio in $(iwinfo 2>/dev/null | awk '/ESSID/ {print $1}' | sort -u); do
+	case "$radio" in
+		radio0)  # pcie0 -> MT7615N, 5 GHz
+			uci -q batch <<-EOF
+				set wireless.radio0.channel='auto'
+				set wireless.radio0.htmode='VHT80'
+				set wireless.radio0.country=''
+				set wireless.radio0.cell_density='0'
+				set wireless.radio0.disabled='0'
+			EOF
+			;;
+		radio1)  # pcie1 -> MT7603EN, 2.4 GHz
+			uci -q batch <<-EOF
+				set wireless.radio1.channel='auto'
+				set wireless.radio1.htmode='HT20'
+				set wireless.radio1.country=''
+				set wireless.radio1.cell_density='3'
+				set wireless.radio1.disabled='0'
+			EOF
+			;;
+	esac
+	i=$((i + 1))
+done
+uci -q commit wireless
+
+# ===========================================================================
+# 9. Enable the NexRouter services
+# ===========================================================================
+for svc in nexrouter-core nexrouter-insight; do
+	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null
+done
+
+echo "nexrouter: provisioning complete — open http://<router>/nex/"
+exit 0
