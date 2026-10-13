@@ -73,11 +73,13 @@ IB_DIR="$WORK/imagebuilder"
 #                                halve a 500 Mbps link. fq_codel is used
 #                                instead (see etc/config/nexrouter).
 #   kmod-mt7615e is pulled in by DEVICE_PACKAGES for this profile already.
-PACKAGES_REMOVE="-luci -luci-base -luci-lib-base -luci-theme-bootstrap \
--luci-mod-admin-full -luci-proto-ppp -luci-proto-ipv6 -luci-app-firewall \
--luci-app-opkg -px5g-wolfssl"
+PACKAGES_REMOVE="-luci-theme-bootstrap -wpad-basic-mbedtls -px5g-wolfssl"
 
 PACKAGES_ADD=" \
+  luci luci-base luci-mod-admin-full luci-app-firewall luci-app-opkg \
+  luci-theme-argon luci-app-argon-config \
+  https-dns-proxy luci-app-https-dns-proxy \
+  wpad-mbedtls kmod-tcp-bbr \
   uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
   libubus libblobmsg-json jq curl ca-bundle ca-certificates \
   nlbwmon luci-lib-nixio \
@@ -89,7 +91,6 @@ PACKAGES_ADD=" \
   luci-app-statistics collectd collectd-mod-load collectd-mod-memory \
     collectd-mod-network collectd-mod-interface collectd-mod-iwinfo \
   ethtool iperf3 vnstat2 htop nano less procps-ng-ps procps-ng-free \
-  kmod-usb-core kmod-usb2 kmod-usb3 \
   odhcpd-ipv6only odhcp6c \
   irqbalance \
   block-mount e2fsprogs kmod-fs-ext4"
@@ -205,6 +206,13 @@ if [ ! -x "$IB_DIR/Makefile" ] && [ ! -f "$IB_DIR/Makefile" ]; then
   echo "ERROR: Image Builder not present at $IB_DIR" >&2
   echo "       Re-run without --offline, or check the release name." >&2
   exit 1
+fi
+
+# ---- stage custom offline packages ---------------------------------------
+if [ -d "$ROOT/packages" ] && compgen -G "$ROOT/packages/*.ipk" > /dev/null; then
+  echo "==> staging custom packages into ImageBuilder"
+  mkdir -p "$IB_DIR/packages"
+  cp -a "$ROOT/packages/"*.ipk "$IB_DIR/packages/"
 fi
 
 # ---- assemble the FILES/ overlay -----------------------------------------

@@ -43,16 +43,16 @@ Full hardware documentation: [docs/01-hardware-truth.md](docs/01-hardware-truth.
 
 ## What You Get
 
-- **Modern kernel** (6.x snapshot or pinned stable release) with active security maintenance.
-- **Hardware flowtable offload** enabled by default — ~900 Mbps wired NAT out of the box.
-- **Dual-boot safety** — stock kernel preserved as automatic fallback.
-- **Lightweight web UI** — vanilla JS SPA, no LuCI dependency, no server-side rendering.
-- **Intelligence layer** — device inventory with auditable classification, EWMA anomaly detection, NetFlow export (disabled by default).
-- **Privacy-first defaults** — no phone home, no crash reporting, no telemetry, all stated in UCI config.
-- **Diagnostic tools** — iperf3, tcpdump-mini, collectd, ethtool, vnstat2, htop pre-installed.
-- **SQM support** — CAKE/fq_codel/fq_pie available with explicit throughput-cap warnings.
-- **WireGuard** — kmod-wireguard + wireguard-tools included (⚠️ expect ~50–100 Mbps on soft-float MIPS).
-- **Comprehensive documentation** — seven documents covering hardware, firmware analysis, performance, building, intelligence, web UI, and safe flashing.
+- **Modern Kernel (6.6 LTS)** with active upstream security maintenance and long-term stability.
+- **Argon Glassmorphic Theme** (`luci-theme-argon` v2.4.8 + `luci-app-argon-config`) — modern, responsive UI with automatic dark/light mode and custom wallpaper customization.
+- **DNS-over-HTTPS (DoH)** with native Web GUI (`luci-app-https-dns-proxy`) — encrypts DNS traffic against ISP snooping; choose Cloudflare, Google, Quad9, AdGuard, or custom resolvers with one click.
+- **4×4 MU-MIMO & Beamforming Unlocked** — explicit/implicit beamforming (`su_beamformer=1`, `mu_beamformer=1`) with 4 spatial streams on MT7615 (5 GHz) and 40 MHz HT40 channel bonding on MT7603 (2.4 GHz).
+- **Google BBR Congestion Control** (`kmod-tcp-bbr`) — dynamically probes bandwidth and RTT, eliminating bufferbloat and driving local latency to sub-millisecond levels (<0.7 ms).
+- **Hardware Flowtable Offload (PPE)** enabled by default — achieves ~900–940 Mbps wired line-rate NAT forwarding in MediaTek silicon.
+- **Dual Web Interface** — access either the full-featured **LuCI with Argon Theme** (`http://192.168.1.1/`) or the zero-dependency **NexRouter SPA** (`http://192.168.1.1/nex/`).
+- **Dual-Boot Safety** — stock Xiaomi kernel preserved as automatic fallback.
+- **Full Networking & Security Suite** — WireGuard VPN, iperf3, tcpdump-mini, collectd, ethtool, vnstat2, htop pre-installed.
+- **Comprehensive Engineering Documentation** — seven teardown and architecture guides covering hardware truth, firmware teardown, and safe flashing.
 
 ---
 
