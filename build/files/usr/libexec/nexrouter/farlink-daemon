@@ -1,0 +1,91 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# NexRouter Far-Link & Intelligent Roaming Engine
+# Autonomously accelerates far devices and manages 802.11k/v steering
+# ---------------------------------------------------------------------------
+
+STATE_FILE="/var/run/nexrouter/farlink_status.json"
+mkdir -p /var/run/nexrouter
+
+sync_rrm_neighbors() {
+	nr_2g=$(ubus call hostapd.phy0-ap0 rrm_nr_get_own 2>/dev/null | grep -o '"[0-9a-fA-F]\{30,\}"' | tr -d '"')
+	nr_5g=$(ubus call hostapd.phy1-ap0 rrm_nr_get_own 2>/dev/null | grep -o '"[0-9a-fA-F]\{30,\}"' | tr -d '"')
+	if [ -n "$nr_2g" ]; then
+		ubus call hostapd.phy1-ap0 rrm_nr_set "{\"list\":[[\"9c:9d:7e:18:c4:56\",\"*\",\"$nr_2g\"]]}" 2>/dev/null
+	fi
+	if [ -n "$nr_5g" ]; then
+		ubus call hostapd.phy0-ap0 rrm_nr_set "{\"list\":[[\"9c:9d:7e:18:c4:57\",\"*\",\"$nr_5g\"]]}" 2>/dev/null
+	fi
+}
+
+# Initial neighbor synchronization
+sync_rrm_neighbors
+
+while :; do
+	# Check if Far-Link is enabled in UCI (default: 1)
+	enabled=$(uci -q get nexrouter.farlink.enabled 2>/dev/null || echo "1")
+	if [ "$enabled" != "1" ]; then
+		sleep 15
+		continue
+	fi
+
+	nr_2g=$(ubus call hostapd.phy0-ap0 rrm_nr_get_own 2>/dev/null | grep -o '"[0-9a-fA-F]\{30,\}"' | tr -d '"')
+	nr_5g=$(ubus call hostapd.phy1-ap0 rrm_nr_get_own 2>/dev/null | grep -o '"[0-9a-fA-F]\{30,\}"' | tr -d '"')
+
+	# 1. Audit 5GHz Stations (phy1-ap0)
+	iw dev phy1-ap0 station dump 2>/dev/null | awk '
+	/Station/ { mac=$2 }
+	/signal avg:/ { sig=$3 }
+	/tx bitrate:/ { tx=$3" "$4" "$5 }
+	/rx bitrate:/ { rx=$3" "$4" "$5 }
+	/expected throughput:/ {
+		tp=$3
+		sub(/Mbps/, "", tp)
+		print mac "," sig "," tx "," rx "," tp
+	}' | while IFS=',' read -r mac sig tx rx tp; do
+		[ -n "$mac" ] || continue
+
+		# Far-device threshold: -73 dBm
+		if [ "$sig" -le -73 ] 2>/dev/null; then
+			# Issue 802.11v BSS Transition Request suggesting 2.4G
+			if [ -n "$nr_2g" ]; then
+				ubus call hostapd.phy1-ap0 bss_transition_request "{\"addr\":\"$mac\",\"disassociation_imminent\":false,\"disassociation_timer\":0,\"validity_period\":30,\"neighbors\":[\"$nr_2g\"],\"abridged\":1}" 2>/dev/null
+			fi
+			# Boost airtime weighting to keep TCP pipeline open
+			ubus call hostapd.phy1-ap0 update_airtime "{\"sta\":\"$mac\",\"weight\":384}" 2>/dev/null
+		else
+			# Reset normal airtime weight
+			ubus call hostapd.phy1-ap0 update_airtime "{\"sta\":\"$mac\",\"weight\":256}" 2>/dev/null
+		fi
+	done
+
+	# 2. Audit 2.4GHz Stations (phy0-ap0)
+	iw dev phy0-ap0 station dump 2>/dev/null | awk '
+	/Station/ { mac=$2 }
+	/signal avg:/ { sig=$3 }
+	/tx bitrate:/ { tx=$3" "$4" "$5 }
+	/expected throughput:/ {
+		tp=$3
+		sub(/Mbps/, "", tp)
+		print mac "," sig "," tx "," tp
+	}' | while IFS=',' read -r mac sig tx tp; do
+		[ -n "$mac" ] || continue
+		# Strong signal threshold on 2.4G: > -63 dBm -> Steer to 5G for max speed
+		if [ "$sig" -gt -63 ] 2>/dev/null && [ -n "$nr_5g" ]; then
+			ubus call hostapd.phy0-ap0 bss_transition_request "{\"addr\":\"$mac\",\"disassociation_imminent\":false,\"disassociation_timer\":0,\"validity_period\":30,\"neighbors\":[\"$nr_5g\"],\"abridged\":1}" 2>/dev/null
+		fi
+	done
+
+	# Write active telemetry state
+	cat << SEOF > "$STATE_FILE"
+{
+  "engine": "NexRouter Far-Link Optimizer",
+  "status": "running",
+  "timestamp": $(date +%s),
+  "rts_threshold": 2346,
+  "dual_band_rrm_active": true
+}
+SEOF
+
+	sleep 8
+done

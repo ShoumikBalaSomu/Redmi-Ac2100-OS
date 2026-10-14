@@ -223,6 +223,7 @@ for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | c
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.disabled='0'
 			set wireless.$dev.txpower='24'
+			set wireless.$dev.rts_threshold='2346'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
@@ -235,6 +236,7 @@ for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | c
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.disabled='0'
 			set wireless.$dev.txpower='20'
+			set wireless.$dev.rts_threshold='2346'
 		EOF
 	fi
 done
@@ -277,7 +279,7 @@ passwd -d root 2>/dev/null || true
 # ===========================================================================
 # 9. Enable the NexRouter services
 # ===========================================================================
-for svc in nexrouter-core nexrouter-insight; do
+for svc in nexrouter-core nexrouter-insight nexrouter-farlink; do
 	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null
 done
 
