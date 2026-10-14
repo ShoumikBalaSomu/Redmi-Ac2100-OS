@@ -379,6 +379,16 @@ const nexrouter = {
     };
   },
 
+  farlink() {
+    return {
+      engine: 'NexRouter Far-Link Optimizer',
+      status: 'running',
+      timestamp: Math.floor(Date.now() / 1000),
+      rts_threshold: 2346,
+      dual_band_rrm_active: true,
+    };
+  },
+
   overclock() {
     return {
       current_mhz: 880,
