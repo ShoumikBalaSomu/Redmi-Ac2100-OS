@@ -1,0 +1,7 @@
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
+dev="$(uci -q get network.wan.device)"
+[ -n "$dev" ] || exit 0
+tc qdisc replace dev "$dev" root fq_codel \
+   limit 10240 flows 1024 quantum 3028b target 5ms interval 100ms \
+   memory_limit 32Mb ecn 2>/dev/null

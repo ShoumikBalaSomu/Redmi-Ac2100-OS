@@ -1,0 +1,48 @@
+#!/bin/sh /etc/rc.common
+
+START=98
+STOP=10
+
+start() {
+	# 1. Hardware IRQ affinity split across MT7621 MIPS Cores
+	# Ethernet -> CPU0 (mask 1)
+	# MT7603 2.4G -> CPU1 (mask 2)
+	# MT7615 5G -> CPU2/3 (mask c)
+	[ -e /proc/irq/19/smp_affinity ] && echo 1 > /proc/irq/19/smp_affinity
+	[ -e /proc/irq/27/smp_affinity ] && echo 2 > /proc/irq/27/smp_affinity
+	[ -e /proc/irq/28/smp_affinity ] && echo c > /proc/irq/28/smp_affinity
+
+	# 2. RPS (Receive Packet Steering) across cores
+	for dev in eth0 wan lan1 lan2 lan3 pppoe-wan br-lan; do
+		if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
+			echo 3 > "/sys/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null
+			echo 4096 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt" 2>/dev/null
+		fi
+	done
+
+	for dev in phy0-ap0 phy1-ap0; do
+		if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
+			echo e > "/sys/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null
+			echo 4096 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt" 2>/dev/null
+		fi
+	done
+
+	# 3. Increase global RPS sock flow entries
+	echo 32768 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+
+	# 4. Silence martian source packet spam in dmesg
+	for f in /proc/sys/net/ipv4/conf/*/log_martians; do
+		echo 0 > "$f" 2>/dev/null
+	done
+
+	# 5. TX queue length optimization
+	for iface in eth0 wan br-lan pppoe-wan; do
+		ip link set "$iface" txqueuelen 2000 2>/dev/null
+	done
+
+	return 0
+}
+
+stop() {
+	return 0
+}

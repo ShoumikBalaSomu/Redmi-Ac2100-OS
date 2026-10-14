@@ -64,4 +64,10 @@ webui/_mock.err
 # ── Extraction scratch & backups ──────────────────────────────────────────────
 analysis/*_extracted/
 build/custom_catwrt_*/
+build/.work_repack/
+build/mt76/
+build/sdk/
+build/snapshot/
+packages_argon/
 backups/
+*.sha256

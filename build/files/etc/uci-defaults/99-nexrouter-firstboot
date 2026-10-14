@@ -25,19 +25,11 @@
 echo "nexrouter: first-boot provisioning (${NEXROUTER_VERSION:-dev})"
 
 # ===========================================================================
-# 1. Firewall: nftables flow offloading
+# 1. Firewall: nftables flow offloading & hardware PPE offload
 # ===========================================================================
-# Software flow offloading creates an nftables flowtable so that established
-# flows skip per-packet rule evaluation. Hardware flow offloading then hands
-# eligible flows to the MT7621 PPE (packet processing engine) — the same
-# silicon the vendor HNAT driver uses — so forwarding happens without CPU
-# involvement at all.
-#
-# Hardware offload requires software offload as a fallback, because the PPE
-# flow table is small and cannot hold every connection.
 uci -q batch <<-EOF
 	set firewall.@defaults[0].flow_offloading='1'
-	set firewall.@defaults[0].flow_offloading_hw='0'
+	set firewall.@defaults[0].flow_offloading_hw='1'
 	set firewall.@defaults[0].syn_flood='1'
 	set firewall.@defaults[0].synflood_rate='100'
 	set firewall.@defaults[0].input='REJECT'
@@ -49,10 +41,6 @@ EOF
 # ===========================================================================
 # 2. Network: offload-friendly defaults, no SQM
 # ===========================================================================
-# packet_steering spreads softirq work across both cores. It measurably helps
-# on this dual-core SoC, but it was broken in some snapshots around Feb 2023
-# (openwrt/openwrt#12962), so the UI surfaces it as a toggle with a live
-# throughput comparison rather than hard-coding a blind "on".
 uci -q batch <<-EOF
 	set network.globals.packet_steering='1'
 	set network.wan.proto='pppoe'
@@ -62,16 +50,13 @@ uci -q batch <<-EOF
 	commit network
 EOF
 
-# fq_codel on the WAN egress qdisc: fair queuing plus CoDel AQM. This is the
-# cheap 90% of what CAKE offers, without the single-threaded shaping cost.
+# fq_codel on the WAN egress qdisc: fair queuing plus CoDel AQM.
+mkdir -p /etc/hotplug.d/iface
 cat > /etc/hotplug.d/iface/20-nexrouter-qdisc <<'QEOF'
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
 dev="$(uci -q get network.wan.device)"
 [ -n "$dev" ] || exit 0
-# Replace the default pfifo_fast/fq_codel with an explicit fq_codel tuned for
-# a ~1 Gbps capable path. target 5ms / interval 100ms are the CoDel defaults
-# and are correct for a low-latency home link.
 tc qdisc replace dev "$dev" root fq_codel \
    limit 10240 flows 1024 quantum 3028b target 5ms interval 100ms \
    memory_limit 32Mb ecn 2>/dev/null
@@ -81,14 +66,9 @@ chmod 0755 /etc/hotplug.d/iface/20-nexrouter-qdisc
 # ===========================================================================
 # 3. Kernel / sysctl tuning
 # ===========================================================================
-# Conservative, reversible, and targeted at what this SoC actually bottlenecks
-# on: connection-tracking table size, TCP buffer autotuning, and dropping
-# martians. Nothing here overclocks or changes clocks.
+mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/99-nexrouter.conf <<'SEOF'
 # --- conntrack -------------------------------------------------------------
-# The PPE flow table is small; anything not offloaded falls back to software
-# conntrack. A 65536-entry table on 128 MiB RAM costs ~10 MiB worst case and
-# prevents table-full drops under heavy P2P / many-client load.
 net.netfilter.nf_conntrack_max=65536
 net.netfilter.nf_conntrack_buckets=16384
 net.netfilter.nf_conntrack_tcp_timeout_established=43200
@@ -96,16 +76,13 @@ net.netfilter.nf_conntrack_udp_timeout=30
 net.netfilter.nf_conntrack_udp_timeout_stream=120
 
 # --- TCP -------------------------------------------------------------------
-# rmem/wmem max 8 MiB is plenty for a 1 Gbps link with ~10 ms RTT and keeps
-# autotuning effective for high-bandwidth transfers without wasting RAM on
-# short-lived connections.
 net.core.rmem_max=8388608
 net.core.wmem_max=8388608
 net.ipv4.tcp_rmem=4096 131072 8388608
 net.ipv4.tcp_wmem=4096 131072 8388608
-net.core.netdev_max_backlog=4096
+net.core.netdev_max_backlog=10000
 net.core.netdev_budget=600
-net.core.somaxconn=1024
+net.core.somaxconn=4096
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_mtu_probing=1
@@ -115,7 +92,8 @@ net.ipv4.tcp_fin_timeout=15
 # --- filtering -------------------------------------------------------------
 net.ipv4.conf.all.rp_filter=1
 net.ipv4.conf.default.rp_filter=1
-net.ipv4.conf.all.log_martians=1
+net.ipv4.conf.all.log_martians=0
+net.ipv4.conf.default.log_martians=0
 net.ipv4.conf.all.accept_redirects=0
 net.ipv4.conf.all.send_redirects=0
 net.ipv4.conf.all.accept_source_route=0
@@ -125,8 +103,6 @@ net.ipv6.conf.all.accept_redirects=0
 net.ipv6.conf.all.accept_source_route=0
 
 # --- VM --------------------------------------------------------------------
-# The overlay lives on NAND; keep dirty pages small so a burst of writes
-# cannot stall the network stack, and let the kernel reclaim early.
 vm.swappiness=10
 vm.dirty_ratio=10
 vm.dirty_background_ratio=5
@@ -174,27 +150,22 @@ if [ -x /etc/init.d/https-dns-proxy ]; then
 fi
 
 # ===========================================================================
-# 6. Telemetry exporter — OFF by default
+# 6. UPnP & Port Forwarding Defaults
 # ===========================================================================
-# softflowd exports NetFlow to an external collector where real analysis can
-# happen. It costs ~2-5% CPU. It is disabled until the user points it at a
-# collector of their choosing, because turning it on means traffic metadata
-# leaves the device.
 uci -q batch <<-EOF
-	set softflowd.@softflowd[0].enabled='0'
-	commit softflowd
+	set upnpd.config.enabled='1'
+	set upnpd.config.enable_natpmp='1'
+	set upnpd.config.enable_upnp='1'
+	set upnpd.config.secure_mode='1'
+	commit upnpd
 EOF
 
 # ===========================================================================
-# 7. Intelligence layer — heuristics only, ON by default; export OFF
+# 7. Telemetry & Intelligence Layer
 # ===========================================================================
-# This uci-defaults hook runs AFTER /etc/config/nexrouter is installed, so the
-# values set here override the file's defaults on first boot. They must match
-# the documented behaviour or the override silently wins: the intelligence layer
-# is ON (it costs ~nothing — a 15-minute reniced poll — and nothing leaves the
-# device), while NetFlow export is OFF (that is the one thing that sends traffic
-# metadata off the router, so it stays a deliberate user choice).
 uci -q batch <<-EOF
+	set softflowd.@softflowd[0].enabled='0'
+	commit softflowd
 	set nexrouter.core.enabled='1'
 	set nexrouter.insight.enabled='1'
 	set nexrouter.insight.mode='heuristic'
@@ -253,6 +224,7 @@ for iface in $(uci -q show wireless | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' 
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
@@ -263,11 +235,15 @@ for iface in $(uci -q show wireless | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' 
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	fi
 done
 uci -q commit wireless
 
+# ===========================================================================
+# 9. Timezone & Password Defaults
+# ===========================================================================
 uci -q batch <<-EOF
 	set system.@system[0].zonename='Asia/Dhaka'
 	set system.@system[0].timezone='<+06>-6'
@@ -277,9 +253,9 @@ EOF
 passwd -d root 2>/dev/null || true
 
 # ===========================================================================
-# 9. Enable the NexRouter services
+# 10. Enable All NexRouter Services
 # ===========================================================================
-for svc in nexrouter-core nexrouter-insight nexrouter-farlink; do
+for svc in miniupnpd nlbwmon ttyd https-dns-proxy nexrouter-smp nexrouter-core nexrouter-insight nexrouter-farlink; do
 	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null
 done
 
