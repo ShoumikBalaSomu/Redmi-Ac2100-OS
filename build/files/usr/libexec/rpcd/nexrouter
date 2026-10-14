@@ -67,12 +67,12 @@ readfile() {
 }
 
 # ---- input parsing --------------------------------------------------------
-REQ="$(cat 2>/dev/null)"
+# REQ read inside do_call
 
 # param <name> -> raw string value of a request parameter, empty if absent
 param() {
 	have_jq || return 0
-	printf '%s' "$REQ" | jq -r --arg k "$1" '.params[$k] // empty' 2>/dev/null
+	printf '%s' "$REQ" | jq -r --arg k "$1" 'if has($k) then .[$k] | tostring elif has("params") and (.params | has($k)) then .params[$k] | tostring else empty end' 2>/dev/null
 }
 
 # param_int <name> -> validated integer, empty when absent or non-numeric
@@ -85,14 +85,10 @@ param_int() {
 }
 
 # ---- output helpers -------------------------------------------------------
-emit() { printf '[%s]\n' "$1"; }
+emit() { printf '%s\n' "$1"; }
 
 err() {
-	# rpcd surfaces this to the caller as a JSON object; we keep the shape
-	# consistent with the success path so the UI has one code path.
-	# Note the quoting: jstr already emits the surrounding double quotes, so
-	# the literal here provides only the key and the braces.
-	emit "{\"error\":$(jstr "$1")}"
+	printf "{\"error\":%s}\n" "$(jstr "$1")"
 }
 
 # ===========================================================================
@@ -144,7 +140,7 @@ method_overview() {
 	[ -f /etc/nexrouter-release ] && . /etc/nexrouter-release
 
 	cat <<JSON
-[{
+{
   "model": $(jstr "$model"),
   "board": $(jstr "$(printf '%s' "$board" | jq -r '.board_name // ""' 2>/dev/null)"),
   "openwrt": $(jstr "$release"),
@@ -166,7 +162,7 @@ method_overview() {
   },
   "hostname": $(jstr "$(uci -q get system.@system[0].hostname 2>/dev/null)"),
   "timezone": $(jstr "$(uci -q get system.@system[0].timezone 2>/dev/null)")
-}]
+}
 JSON
 }
 
@@ -215,7 +211,7 @@ method_performance() {
 		}' /proc/stat 2>/dev/null)"
 
 	cat <<JSON
-[{
+{
   "offload": {
     "software": $(jbool "$sfo"),
     "hardware": $(jbool "$hfo"),
@@ -240,7 +236,7 @@ method_performance() {
   "cores": [${cores_json:-}],
   "irq_affinity": $(method_irq_inline),
   "notes": $(jstr "Hardware flow offload routes established flows through the MT7621 PPE without CPU involvement. If hw_flows stays at 0 under load, offload is configured but not engaging — see docs/03-performance-reality.md.")
-}]
+}
 JSON
 }
 
@@ -283,7 +279,7 @@ method_irq_inline() {
 # ever reaches uci or a shell as a value.
 method_profiles() {
 	cat <<'JSON'
-[{"profiles":[
+{"profiles":[
   {"id":"throughput",
    "name":"Maximum throughput",
    "description":"Software + hardware flow offload on, fq_codel on WAN, no shaping. Best raw speed (~900 Mbps wired NAT reported on MT7621 with a dedicated WAN GMAC). Incompatible with QoS.",
@@ -300,7 +296,7 @@ method_profiles() {
    "name":"Maximum compatibility",
    "description":"All offload disabled. Slowest (~300-350 Mbps routed) but every packet traverses the full firewall, which is what you want while debugging rules or running per-flow logging.",
    "settings":{"flow_offloading":0,"flow_offloading_hw":0,"packet_steering":0,"qdisc":"fq_codel","sqm":0}}
-]}]
+]}
 JSON
 }
 
@@ -425,7 +421,7 @@ method_overclock() {
 	model="$(awk -F': *' '/^cpu model/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)"
 
 	cat <<JSON
-[{
+{
   "current_mhz": $(jnum "$mhz"),
   "stock_mhz": 880,
   "cpu": $(jstr "${model:-MIPS 1004Kc}"),
@@ -445,7 +441,7 @@ method_overclock() {
             "NAND write instability",
             "permanent brick if PLL exceeds silicon tolerance"],
   "how_if_you_insist": $(jstr "Not from this firmware. It requires changing PLL setup in the bootloader (e.g. Breed) or patching SoC clock init in a full source build. Do it only with a serial console attached and a TFTP recovery image ready.")
-}]
+}
 JSON
 }
 
@@ -473,9 +469,16 @@ method_export_get() {
 	collector="$(uci -q get softflowd.@softflowd[0].collector 2>/dev/null)"
 	port="$(uci -q get softflowd.@softflowd[0].port 2>/dev/null)"
 	proto="$(uci -q get softflowd.@softflowd[0].proto 2>/dev/null)"
-	emit "{\"enabled\":$(jbool "$enabled"),\"collector\":$(jstr "${collector:-}"),\"port\":$(jnum "$port"),\"proto\":$(jstr "${proto:-}"),"
-	"\"cost\":$(jstr "~2-5% CPU"),"
-	"\"privacy\":$(jstr "Flow records contain source/destination IPs, ports, byte counts and timing. That is traffic metadata leaving the device. Only enable it toward a collector you control.")}"
+	cat <<JSON
+{
+  "enabled": $(jbool "$enabled"),
+  "collector": $(jstr "${collector:-}"),
+  "port": $(jnum "$port"),
+  "proto": $(jstr "${proto:-}"),
+  "cost": $(jstr "~2-5% CPU"),
+  "privacy": $(jstr "Flow records contain source/destination IPs, ports, byte counts and timing. That is traffic metadata leaving the device. Only enable it toward a collector you control.")
+}
+JSON
 }
 
 method_export_set() {
@@ -530,7 +533,7 @@ $(cat /proc/mtd 2>/dev/null)
 MTDEOF
 
 	cat <<JSON
-[{
+{
   "partitions": [${mtd_out}],
   "dual_boot": true,
   "stock_kernel_partition": "kernel_stock (0x200000, 4 MiB)",
@@ -540,7 +543,7 @@ MTDEOF
   "ubi_partition_size": "117.5 MiB",
   "recovery_path": $(jstr "Hold reset during power-on for the failsafe/uboot recovery, or TFTP an image. Keep the stock kernel_stock partition intact — it is your way back."),
   "warning": $(jstr "Never erase kernel_stock or factory. factory holds the WiFi EEPROM and MAC addresses; losing it means the radios cannot be calibrated and the MACs are gone.")
-}]
+}
 JSON
 }
 
@@ -572,9 +575,10 @@ JSON
 # CALL — dispatch
 # ===========================================================================
 do_call() {
-	local m p1 p2 p3
+	local m="$1" p1 p2 p3
+	[ -t 0 ] || REQ="$(cat 2>/dev/null)"
+	[ -n "$m" ] || m="$(printf '%s' "$REQ" | jq -r '.method // empty' 2>/dev/null)"
 	have_jq || { err "jq is required"; return; }
-	m="$(printf '%s' "$REQ" | jq -r '.method // empty' 2>/dev/null)"
 
 	case "$m" in
 		overview)             method_overview ;;
@@ -607,6 +611,6 @@ do_call() {
 
 # ---- entry point ----------------------------------------------------------
 case "$1" in
-	LIST) do_list ;;
-	CALL) do_call ;;
+	list|LIST) do_list ;;
+	call|CALL) do_call "$2" ;;
 esac

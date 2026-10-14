@@ -83,7 +83,7 @@ jbool() { case "$1" in 1|true|on|yes) printf 'true' ;; *) printf 'false' ;; esac
 cfg() { uci -q get "nexrouter.insight.$1" 2>/dev/null; }
 
 cmd_config() {
-	printf '[{"enabled":%s,"export":%s,"mode":%s,"window_minutes":%s,"baseline_ready":%s,"known_devices":%s,"oui_entries":%s,"state_dir":%s}]
+	printf '{"enabled":%s,"export":%s,"mode":%s,"window_minutes":%s,"baseline_ready":%s,"known_devices":%s,"oui_entries":%s,"state_dir":%s}
 ' \
 		"$(jbool "$(cfg enabled)")" \
 		"$(jbool "$(cfg export)")" \
@@ -97,17 +97,17 @@ cmd_config() {
 
 cmd_config_set() {
 	en="$1"; ex="$2"; win="$3"
-	case "$en" in ''|0|1) ;; *) printf '[{"error":"enabled must be 0 or 1"}]\n'; return ;; esac
-	case "$ex" in ''|0|1) ;; *) printf '[{"error":"export must be 0 or 1"}]\n'; return ;; esac
+	case "$en" in ''|0|1) ;; *) printf '{"error":"enabled must be 0 or 1"}\n'; return ;; esac
+	case "$ex" in ''|0|1) ;; *) printf '{"error":"export must be 0 or 1"}\n'; return ;; esac
 	case "$win" in ''|*[!0-9]*) win="" ;; esac
 	if [ -n "$win" ]; then
 		# Window is the anomaly-baseline window in minutes. Bound it: too
 		# short makes the baseline useless, too long makes it unresponsive.
 		if [ "$win" -lt 1 ] 2>/dev/null; then
-			printf '[{"error":"window must be >= 1 minute"}]\n'; return
+			printf '{"error":"window must be >= 1 minute"}\n'; return
 		fi
 		if [ "$win" -gt 10080 ] 2>/dev/null; then
-			printf '[{"error":"window must be <= 10080 minutes (7 days)"}]\n'; return
+			printf '{"error":"window must be <= 10080 minutes (7 days)"}\n'; return
 		fi
 		uci -q set nexrouter.insight.window="$win"
 	fi
@@ -123,7 +123,7 @@ cmd_config_set() {
 				uci -q commit softflowd
 				/etc/init.d/softflowd restart >/dev/null 2>&1
 			else
-				printf '[{"error":"export enabled but no softflowd collector is configured; refusing to start an exporter with no destination"}]\n'
+				printf '{"error":"export enabled but no softflowd collector is configured; refusing to start an exporter with no destination"}\n'
 				return
 			fi
 		else
@@ -142,34 +142,38 @@ cmd_config_set() {
 # that spawn a process per device (that would be O(n) fork storms on this SoC).
 build_devices() {
 	tmp="$(mktemp -d)"
-
-	# CLEANUP NOTE: this script runs under /bin/sh, which on OpenWrt is busybox
-	# ash. ash does NOT support `trap ... RETURN`, so cleanup cannot be attached
-	# to function return — it is done explicitly on every exit path below.
-	# Using bash-only syntax here would parse fine under `bash -n` on a dev
-	# machine and then fail at runtime on the router, which is the worst kind of
-	# bug to ship.
 	cleanup() { rm -rf "$tmp"; }
 
-	# Every jq --slurpfile input MUST exist and MUST contain valid JSON. An
-	# absent or empty file makes jq exit non-zero and the whole inventory
-	# collapses to nothing. So each source gets a well-formed fallback rather
-	# than being allowed to be missing.
-
 	# 1. DHCP leases: MAC, IP, hostname, lease expiry
-	ubus call dhcp ipv4leases 2>/dev/null > "$tmp/leases.json"
-	if [ ! -s "$tmp/leases.json" ]; then
-		printf '{"leases":[]}\n' > "$tmp/leases.json"
+	: > "$tmp/leases.tsv"
+	if [ -f /tmp/dhcp.leases ]; then
+		awk 'NF>=3 {
+			h = $4; if (h == "*") h = "";
+			expires = $1 + 0;
+			print toupper($2) "\t" $3 "\t" h "\t" expires "\tdhcp"
+		}' /tmp/dhcp.leases > "$tmp/leases.tsv"
 	fi
 
-	# 2. ARP / neighbour table: MAC -> IP -> device (catches static IPs that
-	#    never took a DHCP lease, which is most IoT gear)
-	: > "$tmp/arp.txt"
-	[ -r /proc/net/arp ] && cat /proc/net/arp > "$tmp/arp.txt"
+	# 2. ARP / neighbour table: MAC -> IP -> device
+	: > "$tmp/arp.tsv"
+	if [ -r /proc/net/arp ]; then
+		awk 'NR>1 && $4 != "00:00:00:00:00:00" && $3 != "0x0" {
+			print toupper($4) "\t" $1 "\t" $6 "\tarp"
+		}' /proc/net/arp > "$tmp/arp.tsv"
+	fi
 
-	# 3. IPv6 neighbours
-	: > "$tmp/ndp.txt"
-	ip -6 neigh show 2>/dev/null > "$tmp/ndp.txt"
+	# 3. IPv6 neighbours (NDP)
+	: > "$tmp/ndp.tsv"
+	ip -6 neigh show 2>/dev/null | awk '/lladdr/ {
+		ip = $1; iface = ""; mac = "";
+		for (i = 1; i <= NF; i++) {
+			if ($i == "dev") iface = $(i+1);
+			if ($i == "lladdr") mac = $(i+1);
+		}
+		if (mac != "" && mac != "00:00:00:00:00:00") {
+			print toupper(mac) "\t" ip "\t" iface "\tndp"
+		}
+	}' > "$tmp/ndp.tsv"
 
 	# 4. nlbwmon per-host counters. This package may not be installed, in which
 	#    case the file must still exist with a valid empty payload.
@@ -183,13 +187,17 @@ build_devices() {
 		fi
 	fi
 
-	# OUI database -> awk/jq-loadable file (may legitimately be empty)
-	: > "$tmp/oui.txt"
-	[ -r "$OUI_DB" ] && cat "$OUI_DB" > "$tmp/oui.txt" 2>/dev/null
+	# 5. Extract seen MAC prefixes and match against OUI database (O(1) prefix lookup)
+	: > "$tmp/oui.tsv"
+	awk '{
+		m = $1; gsub(/[^0-9A-F]/, "", m);
+		if (length(m) >= 6) print substr(m, 1, 6);
+	}' "$tmp/leases.tsv" "$tmp/arp.tsv" "$tmp/ndp.tsv" 2>/dev/null | sort -u > "$tmp/prefixes.txt"
 
-	# jq is the right tool for these joins. Doing them in awk instead would mean
-	# hand-rolling a JSON parser, which is a far larger source of bugs than the
-	# dependency is worth. jq is in the package list for this image.
+	if [ -s "$OUI_DB" ] && [ -s "$tmp/prefixes.txt" ]; then
+		awk -F'\t' 'NR==FNR { p[$1]=1; next } p[$1] { print $1 "\t" $2 }' "$tmp/prefixes.txt" "$OUI_DB" > "$tmp/oui.tsv"
+	fi
+
 	if ! command -v jq >/dev/null 2>&1; then
 		cleanup
 		printf '{"devices":[],"count":0,"by_kind":{},"error":"jq is required for device inventory"}\n'
@@ -197,49 +205,90 @@ build_devices() {
 	fi
 
 	jq -n \
-		--slurpfile leases "$tmp/leases.json" \
-		--slurpfile nlbw   "$tmp/nlbw.json" \
-		--arg oui          "$(cat "$tmp/oui.txt" 2>/dev/null)" \
-		--arg arp          "$(cat "$tmp/arp.txt" 2>/dev/null)" \
-		--arg ndp          "$(cat "$tmp/ndp.txt" 2>/dev/null)" '
-		# Parse the OUI table into a lookup object.
+		--rawfile leases "$tmp/leases.tsv" \
+		--rawfile arp    "$tmp/arp.tsv" \
+		--rawfile ndp    "$tmp/ndp.tsv" \
+		--rawfile oui    "$tmp/oui.tsv" \
+		--slurpfile nlbw "$tmp/nlbw.json" '
+		# Helper: match any substring without Oniguruma regex (avoids mipsel jq assertion abort)
+		def matches_any($str; terms): any(terms[]; . as $t | $str | contains($t));
+
+		# Deterministic classification rules
+		def classify(host; vendor):
+			((host // "") | ascii_downcase) as $h |
+			((vendor // "") | ascii_downcase) as $v |
+			if   matches_any($h; ["tv","roku","chromecast","firestick","shield","bravia","smartcast","appletv","nvidia"]) then "tv"
+			elif matches_any($h; ["iphone","ipad","android","pixel","galaxy","redmi","xiaomi","oneplus","huawei","oppo","vivo","phone"]) then "phone"
+			elif matches_any($h; ["macbook","imac","laptop","desktop","thinkpad","dell","hp-","asus","acer","lenovo","pc"]) then "computer"
+			elif matches_any($h; ["camera","cam","doorbell","ring","nest","wyze","tapo","reolink","dahua","hikvision"]) then "camera"
+			elif matches_any($h; ["plug","bulb","light","switch","sensor","thermostat","hub","zigbee","sonoff","tuya","shelly"]) then "iot"
+			elif matches_any($h; ["playstation","xbox","nintendo","switch-","ps4","ps5","steam"]) then "console"
+			elif matches_any($h; ["printer","scan","epson","brother","canon","kyocera"]) then "printer"
+			elif matches_any($h; ["speaker","sonos","echo","homepod","google-home","alexa","jbl","bose"]) then "speaker"
+			elif matches_any($v; ["apple","samsung electronics","google","xiaomi","huawei","oneplus"]) then "phone-or-tablet"
+			elif matches_any($v; ["espressif","tuya","sonoff","tp-link","aqara","amazon technologies","ring","arlo"]) then "iot"
+			elif matches_any($v; ["nintendo","sony interactive","microsoft"]) then "console"
+			else "unknown" end;
+
+		# Parse matched OUI table into lookup map
 		($oui | split("\n") | map(select(length > 0) | split("\t")) |
 			map(select(length >= 2) | { key: (.[0] | ascii_upcase), value: .[1] }) |
 			from_entries) as $OUI |
 
-		# ARP lines: "IP  HW type  Flags  HW address  Mask  Device"
-		($arp | split("\n") | map(select(length > 0) | split("[ \t]+"; "")) |
-			map(select(length >= 6 and (.[3] != "00:00:00:00:00:00")) |
-				{ mac: (.[3] | ascii_upcase), ip: .[0], iface: .[5], source: "arp" })) as $ARP |
+		# Parse DHCP leases: MAC \t IP \t hostname \t expires \t dhcp
+		($leases | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 4) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: (.[2] // ""),
+				expires: (.[3] | tonumber? // 0),
+				source: "dhcp",
+				iface: null
+			})) as $LEASES |
 
-		($ndp | split("\n") | map(select(length > 0)) |
-			map(capture("^(?<ip>[0-9a-fA-F:]+)\\s+dev\\s+(?<iface>\\S+).*lladdr\\s+(?<mac>[ in a-fA-F0-9:]+)")? // empty) |
-			map({ mac: (.mac | ascii_upcase), ip: .ip, iface: .iface, source: "ndp" })) as $NDP |
+		# Parse ARP entries: MAC \t IP \t iface \t arp
+		($arp | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 3) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: "",
+				expires: null,
+				source: "arp",
+				iface: .[2]
+			})) as $ARP |
 
-		# Per-host traffic counters from nlbwmon, keyed by MAC.
+		# Parse NDP entries: MAC \t IP \t iface \t ndp
+		($ndp | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 3) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: "",
+				expires: null,
+				source: "ndp",
+				iface: .[2]
+			})) as $NDP |
+
+		# Per-host traffic counters from nlbwmon
 		((($nlbw[0].data // [])) | map({
-				key: (.mac // "" | ascii_upcase),
-				value: { rx: (.rx // 0), tx: (.tx // 0),
-				         packets: ((.packets // 0)),
-				         conn: (.conns // 0) } }) | from_entries) as $BW |
+			key: (.mac // "" | ascii_upcase),
+			value: { rx: (.rx // 0), tx: (.tx // 0),
+			         packets: ((.packets // 0)),
+			         conn: (.conns // 0) } }) | from_entries) as $BW |
 
-		# Start from DHCP leases (richest identity), then merge in hosts seen
-		# only in ARP/NDP so static-IP devices are not invisible.
-		(($leases[0].leases // []) | map({
-			mac: (.mac | ascii_upcase),
-			ip: .ipaddr,
-			hostname: (.hostname // ""),
-			expires: (.expires // 0),
-			source: "dhcp"
-		})) as $LEASES |
-
+		# Merge: DHCP leases first, then ARP, then NDP
 		(($LEASES + ($ARP + $NDP | map(select(.mac as $m |
 			$LEASES | map(.mac) | index($m) | not))))) |
 		unique_by(.mac) |
 
 		map(
-			(.mac | gsub("[^0-9A-F]"; "")) as $flat |
+			(.mac | split(":") | join("")) as $flat |
 			($OUI[$flat[0:6]] // null) as $vendor |
+			(classify(.hostname; $vendor)) as $kind |
+			(
+				if ((.hostname // "") | length) > 0 then "hostname"
+				elif $vendor != null then "vendor-oui"
+				else "none" end
+			) as $class_by |
 			{
 				mac: .mac,
 				ip: (.ip // null),
@@ -249,35 +298,9 @@ build_devices() {
 				source: .source,
 				iface: (.iface // null),
 				lease_expires: (.expires // null),
-				traffic: ($BW[.mac] // {rx:0, tx:0, packets:0, conn:0})
-			} |
-			# Device-type classification: deterministic rules over signals we
-			# already hold. Each rule is auditable and cheap. This is not a
-			# model and it does not claim confidence it does not have — where
-			# no rule matches, kind is "unknown".
-			. + {
-				kind: (
-					if   ((.hostname // "") | test("(?i)(tv|roku|chromecast|firestick|shield|bravia|smartcast|appletv|nvidia)")) then "tv"
-					elif ((.hostname // "") | test("(?i)(iphone|ipad|android|pixel|galaxy|redmi|xiaomi|oneplus|huawei|oppo|vivo|phone)")) then "phone"
-					elif ((.hostname // "") | test("(?i)(macbook|imac|laptop|desktop|thinkpad|dell|hp-|asus|acer|lenovo|pc)")) then "computer"
-					elif ((.hostname // "") | test("(?i)(camera|cam|doorbell|ring|nest|wyze|tapo|reolink|dahua|hikvision)")) then "camera"
-					elif ((.hostname // "") | test("(?i)(plug|bulb|light|switch|sensor|thermostat|hub|zigbee|sonoff|tuya|shelly)")) then "iot"
-					elif ((.hostname // "") | test("(?i)(playstation|xbox|nintendo|switch-|ps[45]|steam)")) then "console"
-					elif ((.hostname // "") | test("(?i)(printer|scan|epson|brother|canon|kyocera)")) then "printer"
-					elif ((.hostname // "") | test("(?i)(speaker|sonos|echo|homepod|google-home|alexa|jbl|bose)")) then "speaker"
-					elif ($vendor // "" | test("(?i)(apple|samsung electronics|google|xiaomi|huawei|oneplus)")) then "phone-or-tablet"
-					elif ($vendor // "" | test("(?i)(espressif|tuya|sonoff|tp-link|aqara)")) then "iot"
-					elif ($vendor // "" | test("(?i)(amazon technologies|ring|arlo)")) then "iot"
-					elif ($vendor // "" | test("(?i)(nintendo|sony interactive|microsoft)")) then "console"
-					else "unknown" end
-				),
-				# Record WHY it was classified, so the UI can show evidence
-				# rather than a bare guess.
-				classified_by: (
-					if ((.hostname // "") | length) > 0 then "hostname"
-					elif ($vendor // null) != null then "vendor-oui"
-					else "none" end
-				)
+				traffic: ($BW[.mac] // {rx:0, tx:0, packets:0, conn:0}),
+				kind: $kind,
+				classified_by: $class_by
 			}
 		) |
 		sort_by(-(.traffic.rx + .traffic.tx)) |
@@ -288,7 +311,7 @@ build_devices() {
 		}
 	' > "$DEVICES_CACHE" 2>/dev/null || printf '{"devices":[],"error":"inventory assembly failed"}\n' > "$DEVICES_CACHE"
 
-	rm -rf "$tmp"
+	cleanup
 	cat "$DEVICES_CACHE"
 }
 
@@ -300,7 +323,7 @@ cmd_devices() {
 	# on any jq failure.
 	build_devices > /dev/null 2>&1
 	if [ -s "$DEVICES_CACHE" ]; then
-		jq -c '[.]' "$DEVICES_CACHE" 2>/dev/null || cat "$DEVICES_CACHE"
+		cat "$DEVICES_CACHE"
 	else
 		printf '{"devices":[],"count":0,"by_kind":{},"error":"inventory build failed"}\n'
 	fi
@@ -380,7 +403,7 @@ tick_baseline() {
 }
 
 cmd_anomalies() {
-	[ -s "$BASELINE" ] || { printf '[{"anomalies":[],"note":"baseline not yet built; it populates after a few periodic ticks"}]\n'; return; }
+	[ -s "$BASELINE" ] || { printf '{"anomalies":[],"note":"baseline not yet built; it populates after a few periodic ticks"}\n'; return; }
 
 	# Compute the modified z-score per device against its EWMA baseline, in
 	# fixed point. Devices with a zero MAD are excluded — a constant series
@@ -392,7 +415,7 @@ cmd_anomalies() {
 			n++
 		}
 		END {
-			printf "[{"
+			printf "{"
 			printf "\"threshold\":%.1f,", thr / s
 			printf "\"anomalies\":["
 			first = 1
@@ -413,7 +436,7 @@ cmd_anomalies() {
 					(pct > 10000 ? "high" : (pct > 5000 ? "medium" : "low"))
 				first = 0
 			}
-			printf "],\"baseline_devices\":%d,\"method\":\"EWMA baseline with fixed-point deviation scoring; MAD-style robust thresholds, no ML\"}]\n", n
+			printf "],\"baseline_devices\":%d,\"method\":\"EWMA baseline with fixed-point deviation scoring; MAD-style robust thresholds, no ML\"}\n", n
 		}
 	' "$BASELINE"
 }
