@@ -1,4 +1,56 @@
 {
+	"unauthenticated": {
+		"description": "Passwordless LAN access for NexRouter /nex/ portal",
+		"read": {
+			"ubus": {
+				"nexrouter": [ "*" ],
+				"system": [ "*" ],
+				"network": [ "*" ],
+				"network.device": [ "*" ],
+				"network.interface": [ "*" ],
+				"network.interface.wan": [ "*" ],
+				"network.interface.lan": [ "*" ],
+				"network.wireless": [ "*" ],
+				"uci": [ "*" ],
+				"file": [ "*" ],
+				"iwinfo": [ "*" ],
+				"service": [ "*" ],
+				"log": [ "*" ],
+				"nlbwmon": [ "*" ],
+				"hostapd": [ "*" ],
+				"luci-rpc": [ "*" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"nexrouter": [ "*" ],
+				"system": [ "*" ],
+				"network": [ "*" ],
+				"network.device": [ "*" ],
+				"network.wireless": [ "*" ],
+				"uci": [ "*" ],
+				"file": [ "*" ],
+				"service": [ "*" ],
+				"log": [ "*" ],
+				"nlbwmon": [ "*" ]
+			}
+		}
+	},
+
+	"superuser": {
+		"description": "Superuser access including NexRouter methods",
+		"read": {
+			"ubus": {
+				"nexrouter": [ "*" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"nexrouter": [ "*" ]
+			}
+		}
+	},
+
 	"nexrouter-readonly": {
 		"description": "NexRouter dashboard — read-only access",
 		"read": {

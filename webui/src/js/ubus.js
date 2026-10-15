@@ -265,6 +265,23 @@ export class UbusClient {
            this.can('nexrouter', 'export_set');
   }
 
+  /**
+   * Connect without requiring a password prompt.
+   * Tries an empty-password root login first; if OpenWrt rpcd rejects empty-password
+   * session.login over HTTP, falls back to the unauthenticated null session token
+   * (granted full access by /usr/share/rpcd/acl.d/nexrouter.json).
+   */
+  async autoConnect() {
+    try {
+      return await this.login('root', '');
+    } catch {
+      this.token = '00000000000000000000000000000000';
+      this.authenticated = true;
+      this.acls = [];
+      return { token: this.token, username: 'root', acls: [] };
+    }
+  }
+
   /** End the session server-side so the token stops being valid. */
   async logout() {
     if (!this.token) return;

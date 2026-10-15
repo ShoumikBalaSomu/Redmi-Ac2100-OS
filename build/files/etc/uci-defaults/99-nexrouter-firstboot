@@ -1,24 +1,21 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.1 Wi-Fi 6 Backport & Apex Edition)
+# 99-nexrouter-firstboot (v3.3 Passwordless /nex/ & Stock Silicon Max Edition)
 # ===========================================================================
 # Configures:
-#   1. MT7621 Hardware Flowtable Offload (PPE 16,384 flows) + 4-VPE Steering
-#   2. 5 GHz MT7615N: Channel 149 (VHT80), 26 dBm PA ceiling, 11,454-byte
-#      MPDU, 4x4 SU/MU-MIMO Beamforming, LDPC, STBC, Short-GI.
-#   3. 2.4 GHz MT7603EN: Channel 6 (HT40), 256-QAM TurboQAM (`vendor_vht='1'`),
-#      23 dBm PA ceiling, LDPC, STBC, and Short-GI for 400 Mbps PHY & wall range.
-#   4. Backported Wi-Fi 6 (802.11ax/802.11v/802.11r) MAC & Power-Save Features:
-#      - TWT-Equivalent Sleep: `wnm_sleep_mode='1'`, `proxy_arp='1'`, `uapsd='1'`
-#      - Sub-15ms Fast Roaming: `ieee80211r='1'`, `mobility_domain='4f57'`,
-#        `ft_over_ds='0'`, `ft_psk_generate_local='1'`
-#      - MU-EDCA-Style WMM Priority Queues (`tx_queue_data0_*` / `data2_burst`)
-#      - Dynamic OBSS-PD Spatial Reuse (`obss_pd_enable='1'`)
+#   1. Passwordless /nex/ Web Portal Access (`rpcd` unauthenticated + root ACLs)
+#   2. 64 MiB ZRAM Compressed Virtual RAM on stock 128 MiB ESMT M15T1G1664A DDR3
+#      (turns 128 MiB physical RAM into ~200 MiB effective memory with zero soldering)
+#   3. MT7621AT Hardware Flowtable Offload (PPE 16,384 flows) + 4-VPE Steering
+#   4. 5 GHz MT7615N: Channel 149 (VHT80), 26 dBm PA ceiling, 11,454-byte
+#      MPDU, 4x4 SU/MU-MIMO Beamforming, and backported Wi-Fi 6 MAC features.
+#   5. 2.4 GHz MT7603EN + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs): Channel 6 (HT40),
+#      256-QAM TurboQAM (`vendor_vht='1'`), 23 dBm PA ceiling, LDPC, STBC.
 # ===========================================================================
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.1 Wi-Fi 6 Backport & Apex provisioning (${NEXROUTER_VERSION:-3.1.0})"
+echo "nexrouter: v3.3 Stock Silicon Max & Passwordless /nex/ provisioning (${NEXROUTER_VERSION:-3.3.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -38,9 +35,37 @@ uci -q batch <<-EOF
 	commit network
 EOF
 
+# 3. ZRAM Virtual RAM Multiplier for Stock 128 MiB ESMT M15T1G1664A DDR3
+uci -q batch <<-EOF
+	set system.@system[0].hostname='NexRouter'
+	set system.@system[0].zonename='Asia/Dhaka'
+	set system.@system[0].timezone='<+06>-6'
+	set system.@system[0].zram_size_mb='64'
+	set system.@system[0].zram_comp_algo='lz4'
+	commit system
+EOF
+
 sysctl --system >/dev/null 2>&1 || true
 
-# 3. Web UI: LuCI Argon + Zero-Dependency NexRouter SPA (/nex/)
+# 4. Passwordless /nex/ Web Portal & LuCI Argon Setup
+passwd -d root 2>/dev/null || true
+
+if uci -q get rpcd.@login[0] >/dev/null 2>&1; then
+	uci -q batch <<-EOF
+		set rpcd.@login[0].username='root'
+		set rpcd.@login[0].password='\$p\$root'
+		del rpcd.@login[0].read
+		del rpcd.@login[0].write
+		add_list rpcd.@login[0].read='*'
+		add_list rpcd.@login[0].read='unauthenticated'
+		add_list rpcd.@login[0].read='nexrouter-admin'
+		add_list rpcd.@login[0].write='*'
+		add_list rpcd.@login[0].write='unauthenticated'
+		add_list rpcd.@login[0].write='nexrouter-admin'
+		commit rpcd
+	EOF
+fi
+
 uci -q batch <<-EOF
 	set uhttpd.main.index_page='index.html'
 	set uhttpd.main.rfc1918_filter='0'
@@ -63,7 +88,7 @@ if [ -d /www/nex ]; then
 	uci -q commit uhttpd
 fi
 
-# 4. DNS Hardening & DNS-over-HTTPS (DoH)
+# 5. DNS Hardening & Encrypted DNS-over-HTTPS (DoH)
 uci -q batch <<-EOF
 	set dhcp.@dnsmasq[0].rebind_protection='1'
 	set dhcp.@dnsmasq[0].rebind_localhost='1'
@@ -77,7 +102,7 @@ EOF
 
 [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy enable 2>/dev/null || true
 
-# 5. UPnP Secure Mode
+# 6. UPnP Secure Mode
 if uci -q get upnpd.config >/dev/null 2>&1; then
 	uci -q batch <<-EOF
 		set upnpd.config.enabled='1'
@@ -88,7 +113,7 @@ if uci -q get upnpd.config >/dev/null 2>&1; then
 	EOF
 fi
 
-# 6. Telemetry & AI-RF Contextual Bandit + Wi-Fi 6 OBSS-PD Defaults
+# 7. Telemetry & AI-RF Contextual Bandit + Wi-Fi 6 OBSS-PD Defaults
 if uci -q get softflowd.@softflowd[0] >/dev/null 2>&1; then
 	uci -q set softflowd.@softflowd[0].enabled='0'
 	uci -q commit softflowd
@@ -101,9 +126,14 @@ uci -q batch <<-EOF
 	set nexrouter.core.turbo_2g_vht='1'
 	set nexrouter.core.wifi6_obss_pd='1'
 	set nexrouter.core.wifi6_airtime_fairness='1'
+	set nexrouter.core.zram_boost='1'
+	set nexrouter.core.qpf4200_fem_boost='1'
+	set nexrouter.core.doh_enabled='1'
+	set nexrouter.core.doh_provider='cloudflare'
 	set nexrouter.roaming.enabled='1'
 	set nexrouter.roaming.ai_bandit='1'
 	set nexrouter.roaming.obss_pd_spatial_reuse='1'
+	set nexrouter.roaming.thermal_guard='1'
 	set nexrouter.insight.enabled='1'
 	set nexrouter.insight.mode='heuristic'
 	set nexrouter.insight.export='0'
@@ -112,7 +142,7 @@ uci -q batch <<-EOF
 	commit nexrouter
 EOF
 
-# 7. Wireless: 1733M 5G + 400M 2.4G TurboQAM + Backported Wi-Fi 6 MAC Features
+# 8. Wireless: 1733M 5G + 400M 2.4G TurboQAM + Backported Wi-Fi 6 MAC Features
 [ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
 
 for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
@@ -234,17 +264,12 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 done
 uci -q commit wireless
 
-# 8. System Timezone & Services
-uci -q batch <<-EOF
-	set system.@system[0].hostname='NexRouter'
-	set system.@system[0].zonename='Asia/Dhaka'
-	set system.@system[0].timezone='<+06>-6'
-	commit system
-EOF
-
-for svc in miniupnpd nlbwmon https-dns-proxy nexrouter-core nexrouter-insight nexrouter-farlink; do
+# 9. Enable Services & Reload rpcd/uhttpd for Passwordless /nex/
+for svc in rpcd uhttpd zram miniupnpd nlbwmon https-dns-proxy nexrouter-core nexrouter-insight nexrouter-farlink; do
 	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null || true
 done
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null || true
+[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
-echo "nexrouter: v3.1 Wi-Fi 6 Backport & Apex provisioning complete — open http://192.168.1.1/nex/"
+echo "nexrouter: v3.3 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
 exit 0

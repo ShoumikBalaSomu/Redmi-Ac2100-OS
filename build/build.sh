@@ -79,7 +79,7 @@ PACKAGES_ADD=" \
   luci luci-base luci-mod-admin-full luci-app-firewall luci-app-opkg \
   luci-theme-argon luci-app-argon-config \
   https-dns-proxy luci-app-https-dns-proxy \
-  wpad-mbedtls kmod-tcp-bbr \
+  wpad-mbedtls kmod-tcp-bbr zram-swap kmod-zram \
   uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
   libubus libblobmsg-json jq curl ca-bundle ca-certificates \
   nlbwmon luci-lib-nixio \

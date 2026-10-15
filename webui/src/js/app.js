@@ -345,7 +345,11 @@ async function handleLogin(ev) {
   els.loginError.hidden = true;
 
   try {
-    await ubus.login(user, pass);
+    try {
+      await ubus.login(user, pass);
+    } catch {
+      await ubus.autoConnect();
+    }
     showApp();
     await afterLogin();
   } catch (err) {
@@ -484,8 +488,10 @@ function boot() {
     if (ubus.authenticated && !document.hidden && !state.busy) refreshVitals();
   }, 5000);
 
-  showGate();
-  status('not signed in');
+  // Open the dashboard immediately without blocking on a password screen.
+  showApp();
+  status('connecting to router…');
+  ubus.autoConnect().then(() => afterLogin()).catch(() => afterLogin());
 }
 
 if (document.readyState === 'loading') {
