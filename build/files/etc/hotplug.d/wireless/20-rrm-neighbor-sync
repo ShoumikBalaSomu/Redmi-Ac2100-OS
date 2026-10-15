@@ -1,0 +1,42 @@
+#!/bin/sh
+# ===========================================================================
+# 20-rrm-neighbor-sync — Dynamic 802.11k RRM Neighbor Synchronization
+# ===========================================================================
+# Fixes v1 Noop #4: Never hardcode unit-specific BSSIDs (9c:9d:7e:18:c4:56).
+# Queries live BSSID, SSID, and RRM neighbor strings directly from hostapd ubus.
+
+[ "$ACTION" = "add" ] || [ "$ACTION" = "ifup" ] || [ -z "$ACTION" ] || exit 0
+
+sync_rrm() {
+	local objs obj iface bssid ssid nr
+	local bssid_2g="" ssid_2g="" nr_2g="" obj_2g=""
+	local bssid_5g="" ssid_5g="" nr_5g="" obj_5g=""
+
+	objs="$(ubus list 'hostapd.*' 2>/dev/null)"
+	[ -n "$objs" ] || return 0
+
+	for obj in $objs; do
+		iface="${obj#hostapd.}"
+		bssid="$(cat "/sys/class/net/$iface/address" 2>/dev/null | tr 'A-F' 'a-f')"
+		[ -n "$bssid" ] || continue
+		nr="$(ubus call "$obj" rrm_nr_get_own 2>/dev/null | jq -r '.value[2] // empty' 2>/dev/null)"
+		ssid="$(ubus call "$obj" rrm_nr_get_own 2>/dev/null | jq -r '.value[1] // empty' 2>/dev/null)"
+		[ -n "$nr" ] || continue
+		case "$iface" in
+			*phy0*|*ra0*)
+				bssid_2g="$bssid"; ssid_2g="${ssid:-NexRouter_2.4G}"; nr_2g="$nr"; obj_2g="$obj" ;;
+			*phy1*|*rai0*)
+				bssid_5g="$bssid"; ssid_5g="${ssid:-NexRouter_5G}"; nr_5g="$nr"; obj_5g="$obj" ;;
+		esac
+	done
+
+	if [ -n "$obj_5g" ] && [ -n "$bssid_2g" ] && [ -n "$nr_2g" ]; then
+		ubus call "$obj_5g" rrm_nr_set "{"list":[["$bssid_2g","$ssid_2g","$nr_2g"]]}" 2>/dev/null
+	fi
+	if [ -n "$obj_2g" ] && [ -n "$bssid_5g" ] && [ -n "$nr_5g" ]; then
+		ubus call "$obj_2g" rrm_nr_set "{"list":[["$bssid_5g","$ssid_5g","$nr_5g"]]}" 2>/dev/null
+	fi
+}
+
+( sleep 2 && sync_rrm ) &
+exit 0

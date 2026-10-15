@@ -1,0 +1,33 @@
+--- a/mt7603/init.c
++++ b/mt7603/init.c
+@@ -142,6 +142,27 @@ mt7603_init_hardware(struct mt7603_dev *dev)
+ 	/* Enable 2x2 TX/RX chains and LDPC/STBC long-range wall penetration */
+ 	mt76_rmw_field(dev, MT_WF_PHY_CR_1, MT_WF_PHY_CR_1_MIN_SP_PWR_MASK, 0x2);
+ 
++	/* Lower AGC/CCA Energy Detection threshold to -98 dBm so weak distant
++	 * 2.4 GHz clients through multiple walls are decoded instead of dropped */
++	mt76_wr(dev, 0x10f18, 0x00000012);
++
+ 	return 0;
+ }
+ 
+@@ -218,6 +239,23 @@ int mt7603_register_device(struct mt7603_dev *dev)
+ 	sband->ht_cap.cap |= IEEE80211_HT_CAP_LDPC_CODING |
+ 			     IEEE80211_HT_CAP_TX_STBC |
+ 			     (1 << IEEE80211_HT_CAP_RX_STBC_SHIFT) |
+ 			     IEEE80211_HT_CAP_MAX_AMSDU;
+ 
++	/* Advertise Vendor VHT (256-QAM TurboQAM on 2.4 GHz) so 2x2 HT40 clients
++	 * can negotiate MCS 8/9 (400 Mbps PHY link rate, up from 300 Mbps) */
++	sband->vht_cap.vht_supported = true;
++	sband->vht_cap.cap = IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_7991 |
++			     IEEE80211_VHT_CAP_RXLDPC |
++			     IEEE80211_VHT_CAP_SHORT_GI_80 |
++			     IEEE80211_VHT_CAP_TXSTBC |
++			     IEEE80211_VHT_CAP_RXSTBC_1 |
++			     IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
++	sband->vht_cap.vht_mcs.rx_mcs_map = cpu_to_le16(0xfffa);
++	sband->vht_cap.vht_mcs.tx_mcs_map = cpu_to_le16(0xfffa);
++
+ 	ret = mt76_register_device(&dev->mt76, true, mt7603_rates,
+ 				   ARRAY_SIZE(mt7603_rates));

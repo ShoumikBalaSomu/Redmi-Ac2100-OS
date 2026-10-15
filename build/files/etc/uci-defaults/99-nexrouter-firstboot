@@ -1,0 +1,207 @@
+#!/bin/sh
+# ===========================================================================
+# 99-nexrouter-firstboot (v3.0 Apex Edition) — Clean First-Boot Provisioning
+# ===========================================================================
+# Configures:
+#   1. MT7621 Hardware Flowtable Offload (PPE 16,384 flows) + 4-VPE Steering
+#   2. 5 GHz MT7615N: Channel 149 (VHT80), 26 dBm PA ceiling, 4x4 SU/MU-MIMO
+#      Beamforming, LDPC, STBC, Short-GI, and 802.11k/v RRM Roaming.
+#   3. 2.4 GHz MT7603EN: Channel 6 (HT40), 256-QAM TurboQAM (`vendor_vht='1'`),
+#      23 dBm PA ceiling, LDPC, STBC, and Short-GI for 400 Mbps PHY & wall range.
+# ===========================================================================
+
+[ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
+
+echo "nexrouter: v3.0 Apex first-boot provisioning (${NEXROUTER_VERSION:-3.0.0})"
+
+# 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
+uci -q batch <<-EOF
+	set firewall.@defaults[0].flow_offloading='1'
+	set firewall.@defaults[0].flow_offloading_hw='1'
+	set firewall.@defaults[0].syn_flood='1'
+	set firewall.@defaults[0].synflood_rate='100'
+	set firewall.@defaults[0].input='REJECT'
+	set firewall.@defaults[0].output='ACCEPT'
+	set firewall.@defaults[0].forward='REJECT'
+	commit firewall
+EOF
+
+# 2. Network: 4-VPE Packet Steering & Safe WAN Default (DHCP unless configured)
+uci -q batch <<-EOF
+	set network.globals.packet_steering='2'
+	commit network
+EOF
+
+sysctl --system >/dev/null 2>&1 || true
+
+# 3. Web UI: LuCI Argon + Zero-Dependency NexRouter SPA (/nex/)
+uci -q batch <<-EOF
+	set uhttpd.main.index_page='index.html'
+	set uhttpd.main.rfc1918_filter='0'
+	set uhttpd.main.max_requests='8'
+	set uhttpd.main.script_timeout='60'
+	commit uhttpd
+EOF
+
+if uci -q get luci.main >/dev/null 2>&1; then
+	uci -q batch <<-EOF
+		set luci.main.mediaurlbase='/luci-static/argon'
+		set luci.main.lang='en'
+		commit luci
+	EOF
+fi
+
+if [ -d /www/nex ]; then
+	uci -q del_list uhttpd.main.alias='/nex=/www/nex' 2>/dev/null || true
+	uci -q add_list uhttpd.main.alias='/nex=/www/nex'
+	uci -q commit uhttpd
+fi
+
+# 4. DNS Hardening & DNS-over-HTTPS (DoH)
+uci -q batch <<-EOF
+	set dhcp.@dnsmasq[0].rebind_protection='1'
+	set dhcp.@dnsmasq[0].rebind_localhost='1'
+	set dhcp.@dnsmasq[0].localservice='1'
+	set dhcp.@dnsmasq[0].nonwildcard='1'
+	set dhcp.@dnsmasq[0].cachesize='4096'
+	set dhcp.@dnsmasq[0].min_cache_ttl='300'
+	set dhcp.@dnsmasq[0].negcache='1'
+	commit dhcp
+EOF
+
+[ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy enable 2>/dev/null || true
+
+# 5. UPnP Secure Mode
+if uci -q get upnpd.config >/dev/null 2>&1; then
+	uci -q batch <<-EOF
+		set upnpd.config.enabled='1'
+		set upnpd.config.enable_natpmp='1'
+		set upnpd.config.enable_upnp='1'
+		set upnpd.config.secure_mode='1'
+		commit upnpd
+	EOF
+fi
+
+# 6. Telemetry & AI-RF Controller Defaults
+if uci -q get softflowd.@softflowd[0] >/dev/null 2>&1; then
+	uci -q set softflowd.@softflowd[0].enabled='0'
+	uci -q commit softflowd
+fi
+
+uci -q batch <<-EOF
+	set nexrouter.core.enabled='1'
+	set nexrouter.core.threaded_napi='1'
+	set nexrouter.core.aql_txq_limit='2500'
+	set nexrouter.core.turbo_2g_vht='1'
+	set nexrouter.roaming.enabled='1'
+	set nexrouter.roaming.ai_bandit='1'
+	set nexrouter.insight.enabled='1'
+	set nexrouter.insight.mode='heuristic'
+	set nexrouter.insight.export='0'
+	set nexrouter.telemetry.phone_home='0'
+	set nexrouter.telemetry.crash_reporting='0'
+	commit nexrouter
+EOF
+
+# 7. Wireless: 1733 Mbps 5GHz (4x4 VHT80) + 400 Mbps 2.4GHz (2x2 HT40 256-QAM TurboQAM)
+[ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
+
+for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
+	band="$(uci -q get wireless.$dev.band 2>/dev/null || echo '')"
+	if [ "$band" = "5g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$dev.channel='149'
+			set wireless.$dev.htmode='VHT80'
+			set wireless.$dev.country='BD'
+			set wireless.$dev.txpower='26'
+			set wireless.$dev.cell_density='0'
+			set wireless.$dev.noscan='1'
+			set wireless.$dev.ldpc='1'
+			set wireless.$dev.short_gi_80='1'
+			set wireless.$dev.short_gi_40='1'
+			set wireless.$dev.tx_stbc='1'
+			set wireless.$dev.rx_stbc='3'
+			set wireless.$dev.su_beamformer='1'
+			set wireless.$dev.su_beamformee='1'
+			set wireless.$dev.mu_beamformer='1'
+			set wireless.$dev.beamformer_antennas='4'
+			set wireless.$dev.beamformee_antennas='4'
+			set wireless.$dev.vht_max_mpdu='11454'
+			set wireless.$dev.vht_max_a_mpdu_len_exp='7'
+			set wireless.$dev.tx_queue_data2_burst='4.0'
+			set wireless.$dev.disabled='0'
+		EOF
+	elif [ "$band" = "2g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$dev.channel='6'
+			set wireless.$dev.htmode='HT40'
+			set wireless.$dev.country='BD'
+			set wireless.$dev.txpower='23'
+			set wireless.$dev.cell_density='0'
+			set wireless.$dev.noscan='1'
+			set wireless.$dev.vendor_vht='1'
+			set wireless.$dev.ldpc='1'
+			set wireless.$dev.short_gi_40='1'
+			set wireless.$dev.tx_stbc='1'
+			set wireless.$dev.rx_stbc='1'
+			set wireless.$dev.tx_queue_data2_burst='4.0'
+			set wireless.$dev.disabled='0'
+		EOF
+	fi
+done
+
+for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' | cut -d. -f2); do
+	dev="$(uci -q get wireless.$iface.device 2>/dev/null || echo '')"
+	band="$(uci -q get wireless.$dev.band 2>/dev/null || echo '')"
+	if [ "$band" = "5g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$iface.ssid='NexRouter_5G'
+			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.key='12345678'
+			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.wmm='1'
+			set wireless.$iface.uapsd='1'
+			set wireless.$iface.rts='1536'
+			set wireless.$iface.ieee80211k='1'
+			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.bss_transition='1'
+			set wireless.$iface.time_advertisement='2'
+			set wireless.$iface.rrm_neighbor_report='1'
+			set wireless.$iface.rrm_beacon_report='1'
+			set wireless.$iface.disassoc_low_ack='0'
+		EOF
+	elif [ "$band" = "2g" ]; then
+		uci -q batch <<-EOF
+			set wireless.$iface.ssid='NexRouter_2.4G'
+			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.key='12345678'
+			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.wmm='1'
+			set wireless.$iface.uapsd='1'
+			set wireless.$iface.rts='1536'
+			set wireless.$iface.ieee80211k='1'
+			set wireless.$iface.ieee80211v='1'
+			set wireless.$iface.bss_transition='1'
+			set wireless.$iface.time_advertisement='2'
+			set wireless.$iface.rrm_neighbor_report='1'
+			set wireless.$iface.rrm_beacon_report='1'
+			set wireless.$iface.disassoc_low_ack='0'
+		EOF
+	fi
+done
+uci -q commit wireless
+
+# 8. System Timezone & Services
+uci -q batch <<-EOF
+	set system.@system[0].hostname='NexRouter'
+	set system.@system[0].zonename='Asia/Dhaka'
+	set system.@system[0].timezone='<+06>-6'
+	commit system
+EOF
+
+for svc in miniupnpd nlbwmon https-dns-proxy nexrouter-core nexrouter-insight nexrouter-farlink; do
+	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null || true
+done
+
+echo "nexrouter: v3.0 Apex provisioning complete — open http://192.168.1.1/nex/"
+exit 0

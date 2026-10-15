@@ -1,0 +1,22 @@
+#!/bin/sh
+# ===========================================================================
+# 20-nexrouter-qdisc — Low-overhead fq_codel AQM on WAN egress (4 MiB cap)
+# ===========================================================================
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
+
+dev="$(uci -q get network.wan.device 2>/dev/null)"
+[ -n "$dev" ] || dev="$(uci -q get network.wan.ifname 2>/dev/null)"
+[ -n "$dev" ] || exit 0
+
+# Respect CAKE if user explicitly selected the bufferbloat profile
+current_qdisc="$(tc qdisc show dev "$dev" 2>/dev/null | head -n1)"
+case "$current_qdisc" in
+	*cake*) exit 0 ;;
+esac
+
+tc qdisc replace dev "$dev" root fq_codel \
+	limit 4096 flows 1024 quantum 1514 target 5ms interval 100ms \
+	memory_limit 4Mb ecn 2>/dev/null
+
+ip link set "$dev" txqueuelen 1000 2>/dev/null || true

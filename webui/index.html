@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex, nofollow">
+<title>NexRouter</title>
+
+<!--
+  NexRouter dashboard
+  ===================
+  A standalone single-page app served as static files by uhttpd from /www/nex
+  and reachable at http://<router>/nex/.
+
+  WHY THIS IS NOT A LuCI THEME
+  ----------------------------
+  LuCI is a server-rendered Lua framework. Theming it only restyles markup you
+  do not control, and its request model is a full page transition per action.
+  OpenWrt already exposes a first-class JSON-RPC API through rpcd at /ubus,
+  which is what LuCI itself consumes. Talking to that API directly means:
+
+    * one origin  — the SPA and the API share http(s)://<router>, so there is
+                    no CORS, no second listener, and rpcd session auth applies
+                    unchanged. Access control comes from the ACL groups in
+                    /usr/share/rpcd/acl.d/nexrouter.json, not from the client.
+    * no framework — zero runtime dependencies, no build step needed to view it,
+                    no 300 KB vendor bundle parsed on a device with 128 MiB RAM.
+    * real state   — the UI polls ubus objects and renders live counters, which
+                    is how it can show whether flow offload is actually engaging
+                    rather than merely configured.
+
+  DESIGN PRINCIPLES
+  -----------------
+    1. Density over decoration. This is an instrument panel, not a landing page.
+       Numbers get tabular-nums monospace so columns align and changes are
+       visible at a glance.
+    2. Every performance claim carries a confidence badge. Most published
+       router throughput numbers are anecdotal; silently displaying them as
+       fact is how people make bad decisions. See docs/03-performance-reality.md.
+    3. Destructive or trade-off-laden actions explain their cost BEFORE they
+       are taken. Enabling CAKE shaping on this SoC caps throughput near
+       ~150 Mbps, so the UI says so in the control itself.
+    4. Nothing pretends to be machine learning. The devices/anomalies panels
+       are labelled with the actual method (OUI lookup, deterministic rules,
+       EWMA + robust deviation), and where real ML lives is stated plainly:
+       off the router, in companion/nexinsight. See docs/05-intelligence-layer.md.
+    5. A read-only session must degrade, not break. Controls that the ACL will
+       reject are hidden rather than shown and then failing on click.
+
+  See docs/06-web-ui.md for the ubus wire protocol and extension guide.
+-->
+
+<link rel="stylesheet" href="css/nex.css">
+</head>
+<body>
+
+<!-- ══ Login gate ══════════════════════════════════════════════════════════
+     rpcd requires a session token before any nexrouter.* method is callable.
+     We log in through `call session login`, hold the token in memory only
+     (never localStorage) and send it via the X-UBUS-Token header.
+     ══════════════════════════════════════════════════════════════════════ -->
+<div id="gate" class="gate" hidden>
+  <form id="login-form" class="login" autocomplete="on">
+    <div class="login__brand">
+      <span class="login__mark" aria-hidden="true">◧</span>
+      <h1 class="login__title">NexRouter</h1>
+      <p class="login__sub">Redmi Router AC2100 · MT7621</p>
+    </div>
+    <label class="field">
+      <span class="field__label">Username</span>
+      <input id="login-user" class="input" name="username" value="root"
+             autocomplete="username" required spellcheck="false">
+    </label>
+    <label class="field">
+      <span class="field__label">Password</span>
+      <input id="login-pass" class="input" name="password" type="password"
+             autocomplete="current-password" placeholder="Leave blank if no password set">
+    </label>
+    <p id="login-error" class="login__error" role="alert" hidden></p>
+    <button class="btn btn--primary btn--block" type="submit">Sign in</button>
+    <p class="login__hint">
+      Credentials are sent to this router only and the session token is kept in
+      memory. Nothing is stored or transmitted elsewhere.
+    </p>
+  </form>
+</div>
+
+<!-- ══ App shell ═══════════════════════════════════════════════════════════ -->
+<div id="app" class="app" hidden>
+
+  <header class="topbar">
+    <div class="topbar__left">
+      <span class="mark" aria-hidden="true">◧</span>
+      <div>
+        <div class="topbar__title">NexRouter</div>
+        <div class="topbar__sub" id="hdr-model">connecting…</div>
+      </div>
+    </div>
+
+    <!-- Persistent vitals. Visible from every panel because the two things
+         most worth watching on this hardware are CPU and whether the PPE
+         offload is actually engaged. -->
+    <div class="topbar__vitals" id="vitals">
+      <div class="vital" title="CPU cores busy">
+        <span class="vital__k">cpu</span>
+        <span class="vital__v" id="v-cpu">—</span>
+      </div>
+      <div class="vital" title="Memory available / total">
+        <span class="vital__k">mem</span>
+        <span class="vital__v" id="v-mem">—</span>
+      </div>
+      <div class="vital" title="SoC temperature">
+        <span class="vital__k">temp</span>
+        <span class="vital__v" id="v-temp">—</span>
+      </div>
+      <div class="vital vital--flag" id="v-offload-wrap"
+           title="Hardware flow offload state">
+        <span class="vital__k">offload</span>
+        <span class="vital__v" id="v-offload">—</span>
+      </div>
+      <div class="vital" title="Uptime">
+        <span class="vital__k">up</span>
+        <span class="vital__v" id="v-up">—</span>
+      </div>
+    </div>
+
+    <div class="topbar__right">
+      <button id="theme-toggle" class="iconbtn" title="Toggle theme"
+              aria-label="Toggle colour theme">◐</button>
+      <button id="logout" class="btn btn--ghost" title="Sign out">Sign out</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <nav class="nav" id="nav" aria-label="Panels">
+      <!-- Rendered from PANELS in js/app.js -->
+    </nav>
+
+    <main class="main" id="main" tabindex="-1">
+      <!-- Active panel mounts here -->
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span id="status-msg" class="statusbar__msg">ready</span>
+    <span class="statusbar__meta">
+      <span id="status-acl" title="Access level granted by rpcd ACL"></span>
+      <span id="status-build"></span>
+      <span id="status-clock"></span>
+    </span>
+  </footer>
+</div>
+
+<!-- ══ Toasts ══════════════════════════════════════════════════════════════
+     Non-blocking feedback for actions. Errors stay until dismissed because a
+     transient red flash is easy to miss and these actions change the network. -->
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<!-- Shared templates. Kept in HTML rather than template strings so the markup
+     is greppable and there is no string-concatenated HTML built from API data
+     (which is how XSS gets into dashboards). -->
+<template id="tpl-badge">
+  <span class="badge"><span class="badge__t"></span></span>
+</template>
+
+<template id="tpl-card">
+  <section class="card">
+    <header class="card__head">
+      <h2 class="card__title"></h2>
+      <p class="card__note"></p>
+    </header>
+    <div class="card__body"></div>
+  </section>
+</template>
+
+<!-- ES modules; no bundler required. See webui/README.md for the optional
+     build step that produces webui/dist for image packaging. -->
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

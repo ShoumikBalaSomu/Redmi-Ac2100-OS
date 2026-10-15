@@ -1,0 +1,51 @@
+--- a/mt7615/init.c
++++ b/mt7615/init.c
+@@ -14,6 +14,14 @@
+ #include "mt7615.h"
+ #include "mcu.h"
+ 
++static bool enable_txbf = true;
++module_param(enable_txbf, bool, 0644);
++MODULE_PARM_DESC(enable_txbf, "Enable 4x4 VHT SU/MU Beamforming & Phased Array Gain (default: true)");
++
++static bool max_amsdu_11k = true;
++module_param(max_amsdu_11k, bool, 0644);
++MODULE_PARM_DESC(max_amsdu_11k, "Enable 11454-byte VHT MPDU & 16-fragment hardware TX A-MSDU (default: true)");
++
+ static void
+ mt7615_init_txpower(struct mt7615_dev *dev,
+ 		    struct ieee80211_supported_band *sband)
+@@ -295,6 +303,10 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+ 	ieee80211_hw_set(hw, TX_AMSDU);
+ 	ieee80211_hw_set(hw, TX_FRAG_LIST);
+ 	hw->max_tx_fragments = 16;
++	if (max_amsdu_11k) {
++		hw->max_Nan_fragments = 16;
++		wiphy->max_ap_assoc_sta = 64;
++	}
+ 
+ 	if (dev->dbdc_support)
+ 		wiphy->iface_combinations = mt7615_dbdc_if_comb;
+@@ -338,6 +350,24 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+ 		vht_cap->cap |= IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
+ 
++	if (max_amsdu_11k && !is_mt7663(&dev->mt76)) {
++		/* Unlock 11,454-byte VHT MPDUs (up from 3,895B) for 1733 Mbps 4x4 VHT80 peak */
++		vht_cap->cap &= ~IEEE80211_VHT_CAP_MAX_MPDU_MASK;
++		vht_cap->cap |= IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_11454;
++	}
++
++	if (enable_txbf && !is_mt7663(&dev->mt76)) {
++		/* Unlock 4x4 SU/MU Beamformer, 4 STS Sounding & RX STBC for +6dB range gain */
++		vht_cap->cap |= IEEE80211_VHT_CAP_SU_BEAMFORMER_CAPABLE |
++				IEEE80211_VHT_CAP_SU_BEAMFORMEE_CAPABLE |
++				IEEE80211_VHT_CAP_MU_BEAMFORMER_CAPABLE |
++				IEEE80211_VHT_CAP_TXSTBC |
++				IEEE80211_VHT_CAP_RXSTBC_4 |
++				IEEE80211_VHT_CAP_RXLDPC |
++				(3 << IEEE80211_VHT_CAP_SOUNDING_DIMENSIONS_SHIFT) |
++				(3 << IEEE80211_VHT_CAP_BEAMFORMEE_STS_SHIFT);
++	}
++
+ 	if (is_mt7615(&dev->mt76))
+ 		wiphy->iface_combinations = mt7615_if_comb;

@@ -1,0 +1,27 @@
+--- a/arch/mips/ralink/mt7621.c
++++ b/arch/mips/ralink/mt7621.c
+@@ -188,6 +188,12 @@ void __init ralink_of_remap(void)
+ 	if (!sysc || !memc)
+ 		panic("Failed to remap core resources");
++
++	/* Enable DDR3 burst prefetching on MT7621 memory controller for
++	 * high-bandwidth PCIe <-> Frame Engine DMA transfers */
++	__raw_writel(__raw_readl(memc + 0x04) | BIT(4), memc + 0x04);
+ }
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -3,6 +3,7 @@
+ # Makefile for the Linux networking core.
+ #
+ 
++subdir-ccflags-y += -O3
+ obj-y := sock.o request_sock.o skbuff.o datagram.o stream.o scm.o \
+ 	 gen_stats.o gen_estimator.o net_namespace.o secure_seq.o \
+ 	 flow_dissector.o
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
++CFLAGS_nf_flow_table_core.o += -O3
++CFLAGS_nf_flow_table_offload.o += -O3
+ netfilter-objs := core.o nf_log.o nf_queue.o nf_sockopt.o utils.o

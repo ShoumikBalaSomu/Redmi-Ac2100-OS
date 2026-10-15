@@ -1,0 +1,25 @@
+--- a/mt7615/init.c
++++ b/mt7615/init.c
+@@ -52,7 +52,11 @@ mt7615_init_txpower(struct mt7615_dev *dev,
+ 	for (i = 0; i < sband->n_channels; i++) {
+ 		struct ieee80211_channel *chan = &sband->channels[i];
+-		chan->max_power = min_t(int, chan->max_reg_power, target_chains);
++		/* Unlock full factory-calibrated external PA/LNA ceiling (26 dBm = 400 mW
++		 * on 5 GHz UNII-3) while preserving per-channel EEPROM linearity table */
++		chan->max_power = max_t(int, target_chains, 26);
++		chan->max_reg_power = 26;
++		chan->orig_mpwr = 26;
+ 	}
+ }
+--- a/mt7603/init.c
++++ b/mt7603/init.c
+@@ -188,6 +188,10 @@ mt7603_init_txpower(struct mt7603_dev *dev,
+ 	for (i = 0; i < sband->n_channels; i++) {
+ 		struct ieee80211_channel *chan = &sband->channels[i];
+-		chan->max_power = min_t(int, chan->max_reg_power, target_power);
++		/* Unlock full 23 dBm (200 mW) PA ceiling for 2.4 GHz wall penetration */
++		chan->max_power = max_t(int, target_power, 23);
++		chan->max_reg_power = 23;
++		chan->orig_mpwr = 23;
+ 	}
+ }

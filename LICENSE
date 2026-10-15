@@ -1,0 +1,63 @@
+NexRouter — licensing
+=====================
+
+This project is a firmware overlay and tooling layer built on top of OpenWrt.
+It intentionally uses different licences for different parts, matching the
+licences of what each part sits on. The full text of each licence is included
+under LICENSES/.
+
+Firmware overlay and on-device scripts — GPL-2.0-or-later
+---------------------------------------------------------
+  build/files/**            (UCI defaults, init scripts, the rpcd plugin, the
+                             insight-query intelligence layer, sysctl/network
+                             config, the shipped OUI table)
+  build/build.sh
+  build/patches/**
+
+  These are derivative works intended to be combined into an OpenWrt image and
+  run on the device alongside GPL'd OpenWrt components. They are licensed
+  GPL-2.0-or-later to match OpenWrt. See LICENSES/GPL-2.0-or-later.txt.
+
+Web user interface — MIT
+------------------------
+  webui/**
+
+  The dashboard is a standalone static SPA that talks to the router over the
+  public ubus JSON-RPC API. It is not linked with GPL code at build or run time,
+  so it is released under the permissive MIT licence. See LICENSES/MIT.txt.
+
+Build-time and analysis tooling — MIT
+-------------------------------------
+  tools/**                  (build-oui.mjs)
+  analysis/tools/**         (fwscan.mjs)
+  companion/nexinsight/**   (the off-router NetFlow collector and ML companion)
+
+  These run on a build machine or a separate host, not on the router, and are
+  standalone tools. MIT. See LICENSES/MIT.txt.
+
+Documentation — CC-BY-4.0
+-------------------------
+  docs/**, README.md
+
+  Prose and diagrams, shareable with attribution.
+
+Third-party components in a built image
+---------------------------------------
+An image produced by build/build.sh contains, in addition to the above:
+
+  * OpenWrt base system and packages — GPL-2.0 (and per-package licences)
+  * the Linux kernel — GPL-2.0
+  * the mt76 wireless driver — ISC
+  * jq — MIT
+  * the IEEE OUI registry data shipped at build/files/usr/lib/nexrouter/oui.txt
+    — derived from the IEEE Registration Authority public OUI listing, which the
+    IEEE makes freely available; the derived table here carries no additional
+    restriction beyond attribution to the IEEE Registration Authority.
+
+The resulting flash image is therefore a combined work whose licensing is the
+union of its components, dominated by the GPL-2.0 of OpenWrt and the kernel.
+Nothing in this project relicenses any upstream component.
+
+No trademark claim is made. "Xiaomi", "Redmi", "OpenWrt" and "MediaTek" are the
+property of their respective holders; this is an independent, unofficial project
+and is not endorsed by or affiliated with any of them.

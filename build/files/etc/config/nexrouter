@@ -1,0 +1,30 @@
+# ===========================================================================
+# NexRouter v3.0 Apex Edition — UCI Configuration
+# ===========================================================================
+config core 'core'
+	option enabled '1'
+	option show_build_info '1'
+	option threaded_napi '1'
+	option aql_txq_limit '2500'
+	option pcie_aspm_off '1'
+	option turbo_2g_vht '1'
+
+config roaming 'roaming'
+	option enabled '1'
+	option ai_bandit '1'
+	option rssi_ultra_near '-55'
+	option rssi_mid_bf '-68'
+	option rssi_far_wall '-75'
+	option rssi_high_2g '-60'
+	option interval '3'
+
+config insight 'insight'
+	option enabled '1'
+	option mode 'heuristic'
+	option window '15'
+	option export '0'
+	option retention_days '30'
+
+config telemetry 'telemetry'
+	option phone_home '0'
+	option crash_reporting '0'

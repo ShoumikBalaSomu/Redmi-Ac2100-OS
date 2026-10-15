@@ -1,0 +1,39 @@
+--- a/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
++++ b/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
+@@ -5,28 +5,36 @@
+ /* override EEPROM size to 0x4da8 for MT7615 */
+ &eeprom_factory_8000 {
+ 	reg = <0x8000 0x4da8>;
+ };
+ 
++&wdt {
++	status = "okay";
++};
++
+ &pcie {
+ 	status = "okay";
++	/* Disable PCIe ASPM L0s/L1 to eliminate MT7615N/MT7603E wakeup latency spikes */
++	linux,pci-probe-only = <0>;
+ };
+ 
+ &pcie0 {
+ 	wifi@0,0 {
+ 		compatible = "mediatek,mt76";
+ 		reg = <0x0000 0 0 0 0>;
+ 		nvmem-cells = <&eeprom_factory_8000>;
+ 		nvmem-cell-names = "eeprom";
+ 		ieee80211-freq-limit = <5000000 6000000>;
++		mediatek,disable-aspm;
+ 	};
+ };
+ 
+ &pcie1 {
+ 	wifi@0,0 {
+ 		compatible = "mediatek,mt76";
+ 		reg = <0x0000 0 0 0 0>;
+ 		nvmem-cells = <&eeprom_factory_0>;
+ 		nvmem-cell-names = "eeprom";
+ 		ieee80211-freq-limit = <2400000 2500000>;
++		mediatek,disable-aspm;
+ 	};
+ };

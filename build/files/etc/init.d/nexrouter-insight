@@ -1,0 +1,82 @@
+#!/bin/sh /etc/rc.common
+# ===========================================================================
+# nexrouter-insight — periodic baseline collector for the intelligence layer
+# ===========================================================================
+# Runs `insight-query tick` on a fixed interval using procd's respawn/timer
+# facilities. The tick walks ARP/NDP/DHCP/nlbwmon, merges per-device counters
+# into an EWMA baseline, and trims entries older than the retention window.
+#
+# Why a slow poll instead of packet-level monitoring: per-flow feature
+# extraction at 500 Mbps would cost an estimated 30-50% of one core and
+# 20-40 MB of RAM on this SoC. Sampling device-level counters every 15
+# minutes gives useful anomaly detection at a cost that rounds to zero,
+# which is the honest trade for this hardware.
+#
+# This service is deliberately NOT a high-priority process. It is reniced
+# below the network stack so that a slow baseline rebuild can never starve
+# packet forwarding.
+# ===========================================================================
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG="/usr/libexec/nexrouter/insight-query"
+STATE_DIR="/usr/lib/nexrouter/state"
+
+# Read the window from UCI so the UI change takes effect without editing
+# this file. Clamped to a sane range — an out-of-range value would either
+# hammer the SoC or make the baseline meaningless.
+get_interval() {
+	w="$(uci -q get nexrouter.insight.window 2>/dev/null)"
+	case "$w" in ''|*[!0-9]*) w=15 ;; esac
+	if [ "$w" -lt 1 ] 2>/dev/null; then w=1; fi
+	if [ "$w" -gt 1440 ] 2>/dev/null; then w=1440; fi
+	printf '%s' "$((w * 60))"
+}
+
+start_service() {
+	[ -x "$PROG" ] || return 0
+	[ "$(uci -q get nexrouter.insight.enabled 2>/dev/null)" = "1" ] || return 0
+
+	mkdir -p "$STATE_DIR" 2>/dev/null
+
+	# Build the initial device cache synchronously so the UI has something
+	# to show immediately after boot, then hand over to the periodic timer.
+	"$PROG" build-devices >/dev/null 2>&1
+
+	interval="$(get_interval)"
+
+	procd_open_instance insight
+	procd_set_param command /bin/sh -c "
+		while :; do
+			sleep $interval
+			[ \"\$(uci -q get nexrouter.insight.enabled 2>/dev/null)\" = '1' ] || continue
+			# nice 19 + ionice-style yielding: baseline work must never
+			# compete with forwarding on a dual-core SoC.
+			nice -n 19 $PROG tick >/dev/null 2>&1
+		done
+	"
+	# The tick itself is short, but if it ever hangs we do not want it
+	# wedging the boot sequence. Give it a hard timeout.
+	procd_set_param limits core="unlimited"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 0
+	procd_set_param stderr 1
+	procd_set_param term_timeout 10
+	procd_close_instance
+}
+
+stop_service() {
+	:
+}
+
+service_triggers() {
+	# Re-read the interval if the user changes it in the UI.
+	procd_add_config_trigger nexrouter insight window enabled
+}
+
+reload_service() {
+	stop
+	start
+}

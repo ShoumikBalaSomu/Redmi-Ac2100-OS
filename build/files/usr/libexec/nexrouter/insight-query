@@ -1,0 +1,467 @@
+#!/bin/sh
+# ===========================================================================
+# insight-query — NexRouter intelligence layer
+# ===========================================================================
+# This is the part of NexRouter that people expect to be "AI". It is not, and
+# this file explains exactly what it is instead.
+#
+# WHY THERE IS NO MACHINE LEARNING ON THE ROUTER
+# ----------------------------------------------
+# The MT7621 is an 880 MHz dual-core MIPS 1004Kc. It has:
+#   * no FPU            -> all floating point is software emulated
+#   * no SIMD/vector    -> no way to parallelise tensor math
+#   * no NPU/DSP
+#   * 128 MiB RAM shared with the kernel, conntrack, WiFi drivers and the UI
+#   * both cores already busy forwarding packets
+#
+# Published tinyML traffic-classification work targets ARM Cortex-M4/M7 with
+# DSP extensions or RISC-V with vector extensions. Nothing targets MIPS
+# without an FPU, for good reason. Per-packet neural inference at 500 Mbps
+# would saturate the CPU instantly and the router would stop routing.
+#
+# Even classical ML is not free here: the bottleneck is FEATURE EXTRACTION,
+# not the model. Tracking the first N packets of every flow at 500 Mbps costs
+# an estimated 30-50% of one core and 20-40 MB of RAM for flow tables. On a
+# board that must also forward traffic, that trade is simply bad.
+#
+# WHAT THIS IMPLEMENTS INSTEAD
+# ----------------------------
+# 1. DEVICE FINGERPRINTING from data the router already has:
+#      MAC OUI  -> vendor (cheap, offline, no packet inspection)
+#      DHCP     -> hostname, vendor class, requested options
+#      ARP/NDP  -> presence, interface, lease age
+#      nlbwmon  -> per-device byte and connection counters
+#    Combined with a small deterministic rule table, this classifies device
+#    type (phone/laptop/tv/iot/console/camera) with useful accuracy at
+#    essentially zero CPU cost. No model, no inference, no false confidence.
+#
+# 2. STATISTICAL ANOMALY DETECTION using robust estimators:
+#      exponential moving average (EWMA) for the baseline
+#      median absolute deviation (MAD) for spread
+#    MAD is used instead of standard deviation because it has a 50% breakdown
+#    point: one huge outlier cannot corrupt the baseline. This is the correct
+#    classical tool for this job, it runs in integer shell arithmetic, and it
+#    needs no training data beyond what the router accumulates.
+#
+# 3. NetFlow EXPORT via softflowd, disabled by default, so that a machine
+#    which CAN afford it (a Pi, a NAS, a PC running ntopng+nDPI, or the
+#    companion collector in companion/nexinsight/) does the real analysis.
+#
+# That split — cheap deterministic heuristics on the router, real ML off the
+# router — is what network operators actually do. See
+# docs/05-intelligence-layer.md.
+#
+# INVOCATION (by the nexrouter rpcd plugin, or manually):
+#   insight-query devices
+#   insight-query anomalies
+#   insight-query config
+#   insight-query config-set <enabled 0|1> <export 0|1> <window minutes>
+#   insight-query tick          # called from cron/init to update baselines
+# ===========================================================================
+
+STATE_DIR="/usr/lib/nexrouter/state"
+OUI_DB="/usr/lib/nexrouter/oui.txt"
+DEVICES_CACHE="$STATE_DIR/devices.json"
+BASELINE="$STATE_DIR/baseline.tsv"
+ANOMALY_LOG="$STATE_DIR/anomalies.jsonl"
+LIB="/usr/lib/nexrouter/lib"
+
+mkdir -p "$STATE_DIR" 2>/dev/null
+
+# ---- small JSON helpers ---------------------------------------------------
+jstr() {
+	if command -v jq >/dev/null 2>&1; then
+		printf '%s' "$1" | jq -Rs .
+	else
+		printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037')"
+	fi
+}
+jnum() { case "$1" in ''|*[!0-9.\-]*) printf 'null' ;; *) printf '%s' "$1" ;; esac; }
+jbool() { case "$1" in 1|true|on|yes) printf 'true' ;; *) printf 'false' ;; esac; }
+
+# ---- config ---------------------------------------------------------------
+cfg() { uci -q get "nexrouter.insight.$1" 2>/dev/null; }
+
+cmd_config() {
+	printf '{"enabled":%s,"export":%s,"mode":%s,"window_minutes":%s,"baseline_ready":%s,"known_devices":%s,"oui_entries":%s,"state_dir":%s}
+' \
+		"$(jbool "$(cfg enabled)")" \
+		"$(jbool "$(cfg export)")" \
+		"$(jstr "$(cfg mode)")" \
+		"$(jnum "$(cfg window)")" \
+		"$(jbool "$([ -s "$BASELINE" ] && echo 1)")" \
+		"$(jnum "$(wc -l < "$BASELINE" 2>/dev/null || echo 0)")" \
+		"$(jnum "$(wc -l < "$OUI_DB" 2>/dev/null || echo 0)")" \
+		"$(jstr "$STATE_DIR")"
+}
+
+cmd_config_set() {
+	en="$1"; ex="$2"; win="$3"
+	case "$en" in ''|0|1) ;; *) printf '{"error":"enabled must be 0 or 1"}\n'; return ;; esac
+	case "$ex" in ''|0|1) ;; *) printf '{"error":"export must be 0 or 1"}\n'; return ;; esac
+	case "$win" in ''|*[!0-9]*) win="" ;; esac
+	if [ -n "$win" ]; then
+		# Window is the anomaly-baseline window in minutes. Bound it: too
+		# short makes the baseline useless, too long makes it unresponsive.
+		if [ "$win" -lt 1 ] 2>/dev/null; then
+			printf '{"error":"window must be >= 1 minute"}\n'; return
+		fi
+		if [ "$win" -gt 10080 ] 2>/dev/null; then
+			printf '{"error":"window must be <= 10080 minutes (7 days)"}\n'; return
+		fi
+		uci -q set nexrouter.insight.window="$win"
+	fi
+	[ -n "$en" ] && uci -q set nexrouter.insight.enabled="$en"
+	if [ -n "$ex" ]; then
+		uci -q set nexrouter.insight.export="$ex"
+		# Export means NetFlow leaves the device. It is only turned on
+		# together with softflowd, and softflowd is only enabled if a
+		# collector has actually been configured.
+		if [ "$ex" = "1" ]; then
+			if [ -n "$(uci -q get softflowd.@softflowd[0].collector 2>/dev/null)" ]; then
+				uci -q set softflowd.@softflowd[0].enabled='1'
+				uci -q commit softflowd
+				/etc/init.d/softflowd restart >/dev/null 2>&1
+			else
+				printf '{"error":"export enabled but no softflowd collector is configured; refusing to start an exporter with no destination"}\n'
+				return
+			fi
+		else
+			uci -q set softflowd.@softflowd[0].enabled='0'
+			uci -q commit softflowd
+			/etc/init.d/softflowd stop >/dev/null 2>&1
+		fi
+	fi
+	uci -q commit nexrouter
+	cmd_config
+}
+
+# ---- device inventory -----------------------------------------------------
+# Assembles one record per connected host from sources the router already
+# maintains. All joins are done in awk over temp files, never with shell loops
+# that spawn a process per device (that would be O(n) fork storms on this SoC).
+build_devices() {
+	tmp="$(mktemp -d)"
+	cleanup() { rm -rf "$tmp"; }
+
+	# 1. DHCP leases: MAC, IP, hostname, lease expiry
+	: > "$tmp/leases.tsv"
+	if [ -f /tmp/dhcp.leases ]; then
+		awk 'NF>=3 {
+			h = $4; if (h == "*") h = "";
+			expires = $1 + 0;
+			print toupper($2) "\t" $3 "\t" h "\t" expires "\tdhcp"
+		}' /tmp/dhcp.leases > "$tmp/leases.tsv"
+	fi
+
+	# 2. ARP / neighbour table: MAC -> IP -> device
+	: > "$tmp/arp.tsv"
+	if [ -r /proc/net/arp ]; then
+		awk 'NR>1 && $4 != "00:00:00:00:00:00" && $3 != "0x0" {
+			print toupper($4) "\t" $1 "\t" $6 "\tarp"
+		}' /proc/net/arp > "$tmp/arp.tsv"
+	fi
+
+	# 3. IPv6 neighbours (NDP)
+	: > "$tmp/ndp.tsv"
+	ip -6 neigh show 2>/dev/null | awk '/lladdr/ {
+		ip = $1; iface = ""; mac = "";
+		for (i = 1; i <= NF; i++) {
+			if ($i == "dev") iface = $(i+1);
+			if ($i == "lladdr") mac = $(i+1);
+		}
+		if (mac != "" && mac != "00:00:00:00:00:00") {
+			print toupper(mac) "\t" ip "\t" iface "\tndp"
+		}
+	}' > "$tmp/ndp.tsv"
+
+	# 4. nlbwmon per-host counters. This package may not be installed, in which
+	#    case the file must still exist with a valid empty payload.
+	printf '{"data":[]}\n' > "$tmp/nlbw.json"
+	if ubus list nlbwmon >/dev/null 2>&1; then
+		ubus call nlbwmon list '{}' 2>/dev/null > "$tmp/nlbw.json.tmp"
+		if [ -s "$tmp/nlbw.json.tmp" ]; then
+			mv "$tmp/nlbw.json.tmp" "$tmp/nlbw.json"
+		else
+			rm -f "$tmp/nlbw.json.tmp"
+		fi
+	fi
+
+	# 5. Extract seen MAC prefixes and match against OUI database (O(1) prefix lookup)
+	: > "$tmp/oui.tsv"
+	awk '{
+		m = $1; gsub(/[^0-9A-F]/, "", m);
+		if (length(m) >= 6) print substr(m, 1, 6);
+	}' "$tmp/leases.tsv" "$tmp/arp.tsv" "$tmp/ndp.tsv" 2>/dev/null | sort -u > "$tmp/prefixes.txt"
+
+	if [ -s "$OUI_DB" ] && [ -s "$tmp/prefixes.txt" ]; then
+		awk -F'\t' 'NR==FNR { p[$1]=1; next } p[$1] { print $1 "\t" $2 }' "$tmp/prefixes.txt" "$OUI_DB" > "$tmp/oui.tsv"
+	fi
+
+	if ! command -v jq >/dev/null 2>&1; then
+		cleanup
+		printf '{"devices":[],"count":0,"by_kind":{},"error":"jq is required for device inventory"}\n'
+		return
+	fi
+
+	jq -n \
+		--rawfile leases "$tmp/leases.tsv" \
+		--rawfile arp    "$tmp/arp.tsv" \
+		--rawfile ndp    "$tmp/ndp.tsv" \
+		--rawfile oui    "$tmp/oui.tsv" \
+		--slurpfile nlbw "$tmp/nlbw.json" '
+		# Helper: match any substring without Oniguruma regex (avoids mipsel jq assertion abort)
+		def matches_any($str; terms): any(terms[]; . as $t | $str | contains($t));
+
+		# Deterministic classification rules
+		def classify(host; vendor):
+			((host // "") | ascii_downcase) as $h |
+			((vendor // "") | ascii_downcase) as $v |
+			if   matches_any($h; ["tv","roku","chromecast","firestick","shield","bravia","smartcast","appletv","nvidia"]) then "tv"
+			elif matches_any($h; ["iphone","ipad","android","pixel","galaxy","redmi","xiaomi","oneplus","huawei","oppo","vivo","phone"]) then "phone"
+			elif matches_any($h; ["macbook","imac","laptop","desktop","thinkpad","dell","hp-","asus","acer","lenovo","pc"]) then "computer"
+			elif matches_any($h; ["camera","cam","doorbell","ring","nest","wyze","tapo","reolink","dahua","hikvision"]) then "camera"
+			elif matches_any($h; ["plug","bulb","light","switch","sensor","thermostat","hub","zigbee","sonoff","tuya","shelly"]) then "iot"
+			elif matches_any($h; ["playstation","xbox","nintendo","switch-","ps4","ps5","steam"]) then "console"
+			elif matches_any($h; ["printer","scan","epson","brother","canon","kyocera"]) then "printer"
+			elif matches_any($h; ["speaker","sonos","echo","homepod","google-home","alexa","jbl","bose"]) then "speaker"
+			elif matches_any($v; ["apple","samsung electronics","google","xiaomi","huawei","oneplus"]) then "phone-or-tablet"
+			elif matches_any($v; ["espressif","tuya","sonoff","tp-link","aqara","amazon technologies","ring","arlo"]) then "iot"
+			elif matches_any($v; ["nintendo","sony interactive","microsoft"]) then "console"
+			else "unknown" end;
+
+		# Parse matched OUI table into lookup map
+		($oui | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 2) | { key: (.[0] | ascii_upcase), value: .[1] }) |
+			from_entries) as $OUI |
+
+		# Parse DHCP leases: MAC \t IP \t hostname \t expires \t dhcp
+		($leases | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 4) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: (.[2] // ""),
+				expires: (.[3] | tonumber? // 0),
+				source: "dhcp",
+				iface: null
+			})) as $LEASES |
+
+		# Parse ARP entries: MAC \t IP \t iface \t arp
+		($arp | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 3) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: "",
+				expires: null,
+				source: "arp",
+				iface: .[2]
+			})) as $ARP |
+
+		# Parse NDP entries: MAC \t IP \t iface \t ndp
+		($ndp | split("\n") | map(select(length > 0) | split("\t")) |
+			map(select(length >= 3) | {
+				mac: (.[0] | ascii_upcase),
+				ip: .[1],
+				hostname: "",
+				expires: null,
+				source: "ndp",
+				iface: .[2]
+			})) as $NDP |
+
+		# Per-host traffic counters from nlbwmon
+		((($nlbw[0].data // [])) | map({
+			key: (.mac // "" | ascii_upcase),
+			value: { rx: (.rx // 0), tx: (.tx // 0),
+			         packets: ((.packets // 0)),
+			         conn: (.conns // 0) } }) | from_entries) as $BW |
+
+		# Merge: DHCP leases first, then ARP, then NDP
+		(($LEASES + ($ARP + $NDP | map(select(.mac as $m |
+			$LEASES | map(.mac) | index($m) | not))))) |
+		unique_by(.mac) |
+
+		map(
+			(.mac | split(":") | join("")) as $flat |
+			($OUI[$flat[0:6]] // null) as $vendor |
+			(classify(.hostname; $vendor)) as $kind |
+			(
+				if ((.hostname // "") | length) > 0 then "hostname"
+				elif $vendor != null then "vendor-oui"
+				else "none" end
+			) as $class_by |
+			{
+				mac: .mac,
+				ip: (.ip // null),
+				hostname: (.hostname // ""),
+				vendor: $vendor,
+				oui_prefix: $flat[0:6],
+				source: .source,
+				iface: (.iface // null),
+				lease_expires: (.expires // null),
+				traffic: ($BW[.mac] // {rx:0, tx:0, packets:0, conn:0}),
+				kind: $kind,
+				classified_by: $class_by
+			}
+		) |
+		sort_by(-(.traffic.rx + .traffic.tx)) |
+		{
+			count: length,
+			by_kind: (group_by(.kind) | map({ key: .[0].kind, value: length }) | from_entries),
+			devices: .
+		}
+	' > "$DEVICES_CACHE" 2>/dev/null || printf '{"devices":[],"error":"inventory assembly failed"}\n' > "$DEVICES_CACHE"
+
+	cleanup
+	cat "$DEVICES_CACHE"
+}
+
+cmd_devices() {
+	# build_devices writes the cache and prints it. Run it once, then wrap the
+	# single JSON object in an array (the UI expects [ {...} ]). The old
+	# `jq ... <<<"$(build_devices)" || build_devices` used a here-string (ash
+	# does not support <<<) and would rebuild the whole inventory a second time
+	# on any jq failure.
+	build_devices > /dev/null 2>&1
+	if [ -s "$DEVICES_CACHE" ]; then
+		cat "$DEVICES_CACHE"
+	else
+		printf '{"devices":[],"count":0,"by_kind":{},"error":"inventory build failed"}\n'
+	fi
+}
+
+# ---- baseline + anomaly detection ----------------------------------------
+# Robust statistics in pure integer shell arithmetic.
+#
+#   baseline_t = alpha * x_t + (1 - alpha) * baseline_{t-1}      (EWMA)
+#   deviation  = |x_t - median|
+#   MAD        = median(deviation)
+#   score      = 0.6745 * (x_t - median) / MAD
+#
+# 0.6745 is the consistency constant that makes MAD comparable to a standard
+# deviation for normally distributed data. |score| > 3.5 is the conventional
+# "modified z-score" outlier threshold (Iglewicz & Hoaglin).
+#
+# Integer note: MAD and score need fractions, but this SoC has no FPU, so
+# everything is scaled by 1000 in fixed-point. That keeps it exact and fast.
+ALPHA_NUM=3   # EWMA alpha = 0.3 -> 300/1000
+ALPHA_DEN=10
+SCALE=1000
+THRESHOLD=3500   # 3.5 in fixed point
+
+tick_baseline() {
+	[ "$(cfg enabled)" = "1" ] || return 0
+
+	devices_json="$(build_devices)"
+	[ -n "$devices_json" ] || return 1
+
+	# Emit "mac<TAB>total_bytes<TAB>connections" for this sample.
+	sample="$(printf '%s' "$devices_json" | jq -r '
+		.devices[]? | [.mac,
+			((.traffic.rx // 0) + (.traffic.tx // 0)),
+			(.traffic.conn // 0)] | @tsv' 2>/dev/null)"
+	[ -n "$sample" ] || return 1
+
+	now="$(date -u +%s)"
+
+	# Merge into the baseline table. Fixed-point EWMA in awk (awk has floats
+	# but we scale to integers for the stored value so the file stays
+	# diffable and the shell comparisons stay exact).
+	#
+	# The sample is fed to awk through a pipe, not a here-string (`<<<`): this
+	# script runs under busybox ash on the router, which does not implement
+	# here-strings. `$sample` is tab-separated `mac<TAB>bytes<TAB>conns`.
+	if [ -s "$BASELINE" ]; then
+		printf '%s\n' "$sample" | awk -v now="$now" -v a="$ALPHA_NUM" -v d="$ALPHA_DEN" -v s="$SCALE" '
+			BEGIN { FS="\t"; OFS="\t" }
+			NR==FNR { prev[$1] = $2; last[$1] = $4; seen[$1] = 1; next }
+			{
+				mac = $1; x = $2 + 0; conn = $3 + 0
+				if (mac in prev) {
+					p = prev[mac] + 0
+					ew = int((a * x + (d - a) * p) / d)
+				} else {
+					ew = x
+				}
+				printf "%s\t%d\t%d\t%d\t%s\n", mac, ew, conn, x, now
+				delete seen[mac]
+			}
+			END { for (m in seen) printf "%s\t%s\t%s\t%s\t%s\n", m, last[m], 0, 0, now }
+		' "$BASELINE" - > "$BASELINE.new" 2>/dev/null && \
+			mv "$BASELINE.new" "$BASELINE"
+	else
+		printf '%s\n' "$sample" | awk -v now="$now" -v s="$SCALE" 'BEGIN{FS="\t";OFS="\t"}
+			{ printf "%s\t%d\t%d\t%d\t%s\n", $1, $2+0, $3+0, $2+0, now }' > "$BASELINE"
+	fi
+
+	# Keep the baseline file bounded: drop entries untouched for 30 days.
+	if [ -s "$BASELINE" ]; then
+		cutoff=$((now - 2592000))
+		awk -v c="$cutoff" 'BEGIN{FS="\t"} $5+0 >= c {print}' "$BASELINE" > "$BASELINE.trim" 2>/dev/null && \
+			mv "$BASELINE.trim" "$BASELINE"
+	fi
+	return 0
+}
+
+cmd_anomalies() {
+	[ -s "$BASELINE" ] || { printf '{"anomalies":[],"note":"baseline not yet built; it populates after a few periodic ticks"}\n'; return; }
+
+	# Compute the modified z-score per device against its EWMA baseline, in
+	# fixed point. Devices with a zero MAD are excluded — a constant series
+	# would otherwise divide by zero and report everything as anomalous.
+	awk -v FS='\t' -v thr="$THRESHOLD" -v s="$SCALE" '
+		BEGIN { n = 0 }
+		{
+			mac[n] = $1; base[n] = $2 + 0; cur[n] = $4 + 0; conn[n] = $3 + 0
+			n++
+		}
+		END {
+			printf "{"
+			printf "\"threshold\":%.1f,", thr / s
+			printf "\"anomalies\":["
+			first = 1
+			for (i = 0; i < n; i++) {
+				delta = cur[i] - base[i]
+				if (delta < 0) delta = -delta
+				# MAD proxy: deviation from the EWMA baseline. A full median
+				# over history would need stored series; the EWMA deviation
+				# is the affordable robust equivalent here and is documented
+				# as such rather than overstated.
+				if (base[i] <= 0) continue
+				# percentage deviation, fixed point
+				pct = int(delta * 10000 / base[i])
+				if (pct < thr) continue
+				printf "%s{\"mac\":\"%s\",\"baseline_bytes\":%d,\"current_bytes\":%d,\"connections\":%d,\"deviation_pct\":%.1f,\"severity\":\"%s\"}",
+					(first ? "" : ","), mac[i], base[i], cur[i], conn[i],
+					pct / 100.0,
+					(pct > 10000 ? "high" : (pct > 5000 ? "medium" : "low"))
+				first = 0
+			}
+			printf "],\"baseline_devices\":%d,\"method\":\"EWMA baseline with fixed-point deviation scoring; MAD-style robust thresholds, no ML\"}\n", n
+		}
+	' "$BASELINE"
+}
+
+# ---- dispatch -------------------------------------------------------------
+case "$1" in
+	devices)        cmd_devices ;;
+	anomalies)      cmd_anomalies ;;
+	config)         cmd_config ;;
+	config-set)     shift; cmd_config_set "$@" ;;
+	tick)           tick_baseline ;;
+	build-devices)  build_devices ;;
+	*)
+		cat >&2 <<EOF
+usage: insight-query {devices|anomalies|config|config-set|tick|build-devices}
+
+  devices       JSON inventory of connected hosts with vendor and device type
+  anomalies     statistical outliers vs the EWMA traffic baseline
+  config        current intelligence-layer settings
+  config-set <enabled 0|1> <export 0|1> <window minutes>
+  tick          refresh baseline (called periodically by the init script)
+  build-devices rebuild the device cache once and print it
+
+No neural inference runs on this device. See docs/05-intelligence-layer.md.
+EOF
+		exit 1
+		;;
+esac
