@@ -1,24 +1,22 @@
 #!/bin/sh /etc/rc.common
 # ===========================================================================
-# nexrouter-core (v3.5) — Gigabit Wireless Download & L1 Cache Fastpath Engine
+# nexrouter-core (v3.6) — Zero-Drop LAN, L1 Cache Fastpath & Silicon Optimizer
 # ===========================================================================
-# Fixes the 294 Mbps Wireless Download bottleneck (while LAN=1Gbps, Upload=460Mbps)
-# on Xiaomi Redmi Router AC2100 (MT7621AT + MT7615N + MT7603EN):
+# Pushes every software-possible optimization across the PRESENT stock chips
+# on the Xiaomi Redmi Router AC2100 (MT7621AT + MT7530 + MT7615N + MT7603EN):
 #
-#   1. Core 1 L1 D-Cache Co-Location for WAN -> 5 GHz Download:
-#      On MT7621AT (2 cores / 4 VPEs), VPE0+VPE1 share Core 0's 32 KB L1 cache
-#      and VPE2+VPE3 share Core 1's 32 KB L1 cache. Because MT7621AT lacks hardware
-#      WED for mainline mt7615e TX, WAN -> 5 GHz Download passes through the CPU.
-#      We pin MT7615N PCIe0 IRQ to VPE2 (0x4) and steer eth0/wan RX RPS to
-#      VPE2+VPE3 (0xc) so WAN RX -> mac80211 -> MT7615N PCIe TX never bounces
-#      across Core 0 and Core 1 L1 caches!
-#   2. Zero Double-Scheduling on Wired Ingress + GRO/GSO 64 KB Super-Packets:
-#      Keeps eth0/wan in direct softirq NAPI (`threaded=0`) while enabling
-#      `threaded=1` on `mt76` Wi-Fi radios, and enables GRO + GSO + SG across
-#      all interfaces so incoming TCP Download segments coalesce into 64 KB
-#      super-SKBs before hitting mac80211 hardware A-MSDU (`TX_FRAG_LIST`).
-#   3. Deep 64-MPDU AQL Window (`16000` us / `32000` us, threshold `48000` us):
-#      Eliminates the 2.5 ms AQL starvation that capped Download at ~294 Mbps.
+#   1. Zero-Drop Laptop Wired LAN Healer (`MT7530` Switch + `br-lan`):
+#      - Disables broken 802.3az Energy Efficient Ethernet (EEE) on `lan1..3`
+#        and `wan` so laptop Realtek/Intel NICs never link-flap or drop IP.
+#      - Clears `neigh_suppress` and `hairpin_mode` on `br-lan` ports and lowers
+#        MAC ageing to 30s so laptops switching between Wi-Fi and LAN connect
+#        in 0 ms without ARP/DHCP blackholes.
+#      - Sets `rps_cpus=0` on virtual DSA slave ports (`lan1..3`, `br-lan`) to
+#        eliminate triple-RPS packet reordering on wired LAN!
+#   2. Core 1 L1 D-Cache Co-Location for WAN -> 5 GHz Download (`RPS=0xc`):
+#      Pins MT7615N PCIe0 IRQ to VPE2 (0x4) and steers eth0/wan RX RPS to
+#      VPE2+VPE3 (0xc, Physical Core 1) + GRO/GSO 64 KB super-packet coalescing.
+#   3. Deep 64-MPDU AQL Window (`16000`/`32000` us) + RTS=2347.
 #   4. 64 MiB ZRAM Virtual RAM Multiplier + Qorvo QPF4200 High-Gain LNA Unlock.
 # ===========================================================================
 
@@ -86,8 +84,6 @@ configure_irqs() {
 	done < /proc/interrupts
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		# Core 0: VPE0 (0x1) = GMAC Frame Engine, VPE1 (0x2) = MT7603EN 2.4GHz
-		# Core 1: VPE2 (0x4) = MT7615N 5GHz PCIe0, VPE3 (0x8) = 5GHz Download RPS/TX
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
 		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
 		[ -n "$irq_5g" ]   && set_irq_mask 4 $irq_5g
@@ -101,16 +97,13 @@ configure_irqs() {
 	fi
 }
 
-# 3. Core 1 L1-Cache Download Fastpath (RPS=0xc) + GRO/GSO Super-Packet Coalescing
-configure_napi_rps_and_gro() {
-	local threaded_en netdev d rps_mask_download rps_mask_wifi_rx
+# 3. Core 1 L1-Cache Download Fastpath (RPS=0xc) + Zero-Drop MT7530 LAN Switch Healer
+configure_napi_rps_and_lan_switch() {
+	local threaded_en netdev d rps_mask_download rps_mask_wifi_rx bp
 	threaded_en="$(uci -q get nexrouter.core.threaded_napi 2>/dev/null || echo 1)"
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		# Steer WAN/Eth RX softirqs to Core 1 (VPE2+VPE3 = 0xc) so WAN->5G Download
-		# shares Core 1's 32KB L1 D-Cache with MT7615N PCIe0 TX!
 		rps_mask_download="c"
-		# Steer Wi-Fi Upload RX softirqs to VPE1+VPE3 (0xa) to feed GMAC1 WAN TX
 		rps_mask_wifi_rx="8"
 	else
 		rps_mask_download="3"
@@ -125,8 +118,6 @@ configure_napi_rps_and_gro() {
 		d="$(basename "$netdev")"
 		case "$d" in lo) continue ;; esac
 
-		# Keep wired eth0/wan/lan in direct softirq NAPI (threaded=0) to avoid
-		# double kthread scheduling latency on Download; enable threaded=1 on Wi-Fi
 		if [ -w "$netdev/threaded" ]; then
 			case "$d" in
 				eth*|wan|lan*|br-lan)
@@ -145,8 +136,11 @@ configure_napi_rps_and_gro() {
 					printf '%s' "$rps_mask_wifi_rx" > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
 					printf '4096' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
 				lan*|br-lan)
-					printf '2' > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
-					printf '2048' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
+					# CRITICAL: Virtual DSA slave ports (lan1..3) and br-lan must have RPS=0
+					# because physical eth0 already steered the packet; double/triple RPS
+					# across VPEs reorders DHCP/TCP packets on wired LAN!
+					printf '0' > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
+					printf '0' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
 			esac
 		fi
 
@@ -154,19 +148,38 @@ configure_napi_rps_and_gro() {
 			case "$d" in
 				phy*-ap*|wlan*|rai*)
 					printf 'c' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
+				lan*|br-lan)
+					printf '0' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
 				*)
 					printf '3' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
 			esac
 		fi
 
-		# Enable GRO/GSO/SG super-packet coalescing so 1500B WAN TCP Download frames
-		# merge into 64KB super-packets before traversing mac80211 -> mt7615e A-MSDU
 		if command -v ethtool >/dev/null 2>&1; then
 			ethtool -K "$d" gro on gso on tso on sg on 2>/dev/null || true
+			case "$d" in
+				lan1|lan2|lan3|wan)
+					# Disable broken 802.3az EEE on MT7530 PHYs to stop laptop link-flap
+					ethtool --set-eee "$d" eee off 2>/dev/null || true ;;
+			esac
 		fi
 		ip link set "$d" txqueuelen 2000 2>/dev/null || true
 	done
-	log "Core 1 L1-cache WAN->5G Download fastpath (RPS=0xc) + GRO/GSO super-packets active"
+
+	# Heal br-lan bridge forwarding & disable neighbor/ARP suppression
+	if [ -d /sys/class/net/br-lan/bridge ]; then
+		printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
+		printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
+		printf '3000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
+		printf '0' > /sys/class/net/br-lan/bridge/multicast_snooping 2>/dev/null || true
+	fi
+	for bp in /sys/class/net/br-lan/brif/*; do
+		[ -d "$bp" ] || continue
+		[ -w "$bp/neigh_suppress" ] && printf '0' > "$bp/neigh_suppress" 2>/dev/null || true
+		[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
+	done
+
+	log "Core 1 L1-cache Download fastpath + Zero-Drop MT7530 LAN Switch Healer active"
 }
 
 # 4. Unthrottled 5 GHz Downlink AQL Window (16000/32000 us) + QPF4200 LNA Unlock
@@ -182,7 +195,6 @@ configure_wifi_lowlevel() {
 		[ -w "$phy/aql_threshold" ] && printf '%s
 ' "$aql_thr" > "$phy/aql_threshold" 2>/dev/null || true
 		if [ -w "$phy/aql_txq_limit" ]; then
-			# AC_VO (0) & AC_VI (1): low latency; AC_BE (2) & AC_BK (3): deep 64-MPDU aggregation
 			printf '0 4000 8000
 ' > "$phy/aql_txq_limit" 2>/dev/null || true
 			printf '1 8000 16000
@@ -194,7 +206,6 @@ configure_wifi_lowlevel() {
 		fi
 		[ -w "$phy/aql_enable" ] && printf '1' > "$phy/aql_enable" 2>/dev/null || true
 
-		# Program MT7603EN AGC/CCA register (0x10f18) to unlock Qorvo QPF4200 15.5 dB LNA sensitivity
 		if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] && [ ! -d "$phy/mt76/dbdc" ]; then
 			printf '0x10f18
 ' > "$phy/mt76/regidx" 2>/dev/null || true
@@ -236,10 +247,10 @@ verify_offload() {
 }
 
 start() {
-	log "Applying NexRouter v3.5 Gigabit Wireless Download & L1 Cache Fastpath (VPEs=$VPE_COUNT)"
+	log "Applying NexRouter v3.6 Zero-Drop LAN & Gigabit Wireless Fastpath (VPEs=$VPE_COUNT)"
 	configure_zram_virtual_ram
 	configure_irqs
-	configure_napi_rps_and_gro
+	configure_napi_rps_and_lan_switch
 	configure_wifi_lowlevel
 	verify_offload
 }

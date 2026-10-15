@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# NexRouter v2.0 Full Source Builder (Kernel 6.6 LTS + Custom mt76 Patches)
+# NexRouter v3.6 Full Source Builder (OpenWrt Snapshot / 24.10 + Custom Patches)
 # ===========================================================================
-# Compiles OpenWrt from source with NexRouter's custom kernel, DTS, and mt76
-# wireless patches:
+# Compiles OpenWrt from source with NexRouter's custom kernel, DTS, MT7530 DSA,
+# and mt76 wireless patches:
 #   - patches/kernel-6.6/100-mips-mt7621-dts-redmi-ac2100-optimizations.patch
-#   - patches/kernel-6.6/101-net-mtk_eth_soc-ppe-dma-ring-and-flow-tuning.patch
-#   - patches/mt76/200-mt7615-enable-threaded-napi-and-aql-tuning.patch
-#   - patches/mt76/201-mt7615-vht-beamformer-capability-and-sounding.patch
+#   - patches/kernel-6.6/101-net-mtk_eth_soc-ppe-wed-bridge-fastpath-and-dma-512.patch
+#   - patches/kernel-6.6/102-mips-mt7621-cpu-bus-prefetch-and-unaligned-fastpath.patch
+#   - patches/kernel-6.6/103-net-dsa-mt7530-disable-eee-lpi-laptop-linkflap-fix.patch
+#   - patches/mt76/200-mt7615-mt7603-threaded-napi-and-dma-tx-rx-boost.patch
+#   - patches/mt76/201-mt7615-full-4x4-txbf-mumimo-and-11454-mpdu.patch
+#   - patches/mt76/202-mt7603-256qam-vht24g-and-long-range-cca-sensitivity.patch
+#   - patches/mt76/203-mt76-eeprom-max-txpower-and-pa-lna-calibration-unlock.patch
 #
 # Usage:
 #   ./build/build-from-source.sh [--branch main|v24.10.2] [--jobs N] [--config-only]
 # ===========================================================================
 set -euo pipefail
 
-BRANCH="v24.10.2"
+BRANCH="main"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 CONFIG_ONLY=0
 
@@ -23,7 +27,7 @@ while [ $# -gt 0 ]; do
     --branch)      BRANCH="$2"; shift 2 ;;
     --jobs)        JOBS="$2"; shift 2 ;;
     --config-only) CONFIG_ONLY=1; shift ;;
-    -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -45,11 +49,13 @@ echo "==> Updating and installing OpenWrt feeds"
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-echo "==> Injecting NexRouter Kernel 6.6 & DTS patches"
-mkdir -p "$SRC_DIR/target/linux/ramips/patches-6.6"
-cp -f "$ROOT/patches/kernel-6.6/"*.patch "$SRC_DIR/target/linux/ramips/patches-6.6/"
+echo "==> Injecting NexRouter Kernel, MT7621 PPE, DDR3 Prefetch & MT7530 LAN patches"
+for kdir in "$SRC_DIR"/target/linux/ramips/patches-*; do
+  [ -d "$kdir" ] || continue
+  cp -f "$ROOT/patches/kernel-6.6/"*.patch "$kdir/"
+done
 
-echo "==> Injecting NexRouter mt76 driver patches (Threaded NAPI + VHT Beamformer)"
+echo "==> Injecting NexRouter mt76 driver patches (1733M 5G + 400M 2.4G + Wi-Fi 6 Backports)"
 mkdir -p "$SRC_DIR/package/kernel/mt76/patches"
 cp -f "$ROOT/patches/mt76/"*.patch "$SRC_DIR/package/kernel/mt76/patches/"
 
@@ -60,8 +66,7 @@ mkdir -p "$SRC_DIR/files/www/nex"
 cp -a "$ROOT/build/files/." "$SRC_DIR/files/"
 cp -a "$ROOT/webui/dist/." "$SRC_DIR/files/www/nex/"
 
-find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
-  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' \) -exec chmod 0755 {} +
+find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*'   -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' \) -exec chmod 0755 {} +
 
 echo "==> Generating .config for Xiaomi Redmi Router AC2100 (ramips/mt7621)"
 cat > "$SRC_DIR/.config" <<'EOF'
@@ -70,12 +75,15 @@ CONFIG_TARGET_ramips_mt7621=y
 CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_redmi-router-ac2100=y
 CONFIG_SCHED_SMT=y
 CONFIG_MIPS_MT_SMP=y
+CONFIG_PACKAGE_zram-swap=y
+CONFIG_PACKAGE_kmod-zram=y
+CONFIG_PACKAGE_kmod-lib-lz4=y
 CONFIG_PACKAGE_kmod-mt7603=y
 CONFIG_PACKAGE_kmod-mt7615e=y
 CONFIG_PACKAGE_kmod-mt7615-firmware=y
 CONFIG_PACKAGE_wpad-mbedtls=y
 CONFIG_PACKAGE_kmod-nft-offload=y
-CONFIG_PACKAGE_kmod-tcp-bbr zram-swap kmod-zram=y
+CONFIG_PACKAGE_kmod-tcp-bbr=y
 CONFIG_PACKAGE_kmod-sched-cake=y
 CONFIG_PACKAGE_kmod-wireguard=y
 CONFIG_PACKAGE_wireguard-tools=y

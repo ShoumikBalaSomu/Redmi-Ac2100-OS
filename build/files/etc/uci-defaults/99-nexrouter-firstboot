@@ -1,23 +1,27 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.5 Gigabit Wireless Download Unleashed Edition)
+# 99-nexrouter-firstboot (v3.6 Zero-Drop LAN & Gigabit Wireless Edition)
 # ===========================================================================
 # Configures:
-#   1. Unthrottled 5 GHz Wireless Download (600-850+ Mbps):
-#      - Deep AQL aggregation window (`aql_txq_limit='16000'` us low / `32000` us high)
-#      - RTS threshold disabled (`rts='2347'`) so Download bursts never stall on RTS/CTS
-#      - Native MT7615N hardware WMM TXOP aggregation (no restrictive burst overrides)
-#      - Disables U-APSD/WNM micro-sleep on 5GHz so phones stream full TCP windows
-#      - Sets `packet_steering='0'` so `nexrouter-core` pins WAN->5G Download inside
-#        Physical Core 1's shared 32 KB L1 cache (`VPE2` + `VPE3`).
-#   2. Passwordless /nex/ Web Portal Access + Optional Password Setter in /nex/ & Argon
-#   3. 64 MiB ZRAM Compressed Virtual RAM on stock 128 MiB ESMT M15T1G1664A DDR3
-#   4. 2.4 GHz MT7603EN + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs): 400 Mbps 256-QAM
+#   1. Zero-Drop Wired LAN for Laptops (`lan1`/`lan2`/`lan3` on `br-lan`):
+#      - Disables `proxy_arp` on bridged APs (`proxy_arp='0'`) so `hostapd`
+#        `x_snoop` never hijacks or blocks ARP/DHCP on `br-lan`!
+#      - Sets `dhcp.@dnsmasq[0].authoritative='1'` + `dhcp.lan.force='1'` so
+#        laptops waking from sleep or switching from Wi-Fi to LAN get instant
+#        DHCP leases instead of hanging on `169.254.x.x` ("Unidentified Network").
+#      - Configures `br-lan` (`stp='0'`, `forward_delay='0'`, `igmp_snooping='0'`)
+#        for 0 ms link-up forwarding on MT7530 switch ports.
+#   2. Unthrottled 5 GHz Wireless Download (600-850+ Mbps):
+#      - Deep AQL aggregation window (`aql_txq_limit='16000'` / `32000` us)
+#      - RTS disabled (`rts='2347'`), `uapsd='0'`, `wnm_sleep_mode='0'`
+#      - Core 1 L1 cache co-location (`packet_steering='0'`)
+#   3. Passwordless /nex/ Web Portal + Optional Password Setter in /nex/ & Argon
+#   4. 64 MiB ZRAM Compressed Virtual RAM on stock 128 MiB ESMT M15T1G1664A DDR3
 # ===========================================================================
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.5 Gigabit Wireless Download Unleashed provisioning (${NEXROUTER_VERSION:-3.5.0})"
+echo "nexrouter: v3.6 Zero-Drop LAN & Gigabit Wireless provisioning (${NEXROUTER_VERSION:-3.6.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -31,11 +35,23 @@ uci -q batch <<-EOF
 	commit firewall
 EOF
 
-# 2. Network: Disable generic packet_steering so nexrouter-core pins WAN->5G to Core 1 L1 cache
+# 2. Network & Bridge: Zero-Delay br-lan + L1 Cache Pinning
 uci -q batch <<-EOF
 	set network.globals.packet_steering='0'
+	set network.lan.stp='0'
+	set network.lan.forward_delay='0'
+	set network.lan.igmp_snooping='0'
 	commit network
 EOF
+
+for dev_sec in $(uci -q show network 2>/dev/null | grep "=device" | cut -d. -f2 | cut -d= -f1); do
+	if [ "$(uci -q get network.$dev_sec.name 2>/dev/null)" = "br-lan" ]; then
+		uci -q set network.$dev_sec.stp='0'
+		uci -q set network.$dev_sec.forward_delay='0'
+		uci -q set network.$dev_sec.igmp_snooping='0'
+	fi
+done
+uci -q commit network
 
 # 3. ZRAM Virtual RAM Multiplier for Stock 128 MiB ESMT M15T1G1664A DDR3
 uci -q batch <<-EOF
@@ -90,8 +106,10 @@ if [ -d /www/nex ]; then
 	uci -q commit uhttpd
 fi
 
-# 5. DNS Hardening & Encrypted DNS-over-HTTPS (DoH)
+# 5. Authoritative Instant DHCP for Laptops + Encrypted DNS-over-HTTPS (DoH)
 uci -q batch <<-EOF
+	set dhcp.@dnsmasq[0].authoritative='1'
+	set dhcp.@dnsmasq[0].rapid_commit='1'
 	set dhcp.@dnsmasq[0].rebind_protection='1'
 	set dhcp.@dnsmasq[0].rebind_localhost='1'
 	set dhcp.@dnsmasq[0].localservice='1'
@@ -99,6 +117,8 @@ uci -q batch <<-EOF
 	set dhcp.@dnsmasq[0].cachesize='4096'
 	set dhcp.@dnsmasq[0].min_cache_ttl='300'
 	set dhcp.@dnsmasq[0].negcache='1'
+	set dhcp.lan.force='1'
+	set dhcp.lan.leasetime='12h'
 	commit dhcp
 EOF
 
@@ -145,7 +165,7 @@ uci -q batch <<-EOF
 	commit nexrouter
 EOF
 
-# 8. Wireless: Unthrottled 1733M 5G Download + 400M 2.4G TurboQAM
+# 8. Wireless: Unthrottled 1733M 5G Download + 400M 2.4G TurboQAM + proxy_arp='0'
 [ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
 
 for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
@@ -219,7 +239,7 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
 			set wireless.$iface.wnm_sleep_mode='0'
-			set wireless.$iface.proxy_arp='1'
+			set wireless.$iface.proxy_arp='0'
 			set wireless.$iface.dtim_period='1'
 			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='2347'
@@ -245,7 +265,7 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
 			set wireless.$iface.wnm_sleep_mode='0'
-			set wireless.$iface.proxy_arp='1'
+			set wireless.$iface.proxy_arp='0'
 			set wireless.$iface.dtim_period='1'
 			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='2347'
@@ -272,5 +292,5 @@ done
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null || true
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
-echo "nexrouter: v3.5 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
+echo "nexrouter: v3.6 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
 exit 0

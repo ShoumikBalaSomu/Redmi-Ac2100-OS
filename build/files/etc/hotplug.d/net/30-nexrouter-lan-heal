@@ -1,0 +1,50 @@
+#!/bin/sh
+# ===========================================================================
+# 30-nexrouter-lan-heal (v3.6) — MT7530 Gigabit Switch & Laptop LAN Healer
+# ===========================================================================
+# Prevents laptop LAN connection blocks on lan1/lan2/lan3 by:
+#   1. Disabling 802.3az Energy Efficient Ethernet (EEE / Low-Power Idle) on
+#      MT7530 switch PHYs (fixes Realtek/Intel laptop NIC link-flap & no-IP bugs).
+#   2. Disabling bridge neighbor/ARP suppression (`neigh_suppress=0`) on br-lan
+#      ports so DHCP and ARP broadcasts are never eaten by hostapd snooping.
+#   3. Lowering br-lan MAC ageing time to 30s (from 300s) and flushing failed
+#      neighbor entries when a laptop switches between Wi-Fi and Wired LAN.
+# ===========================================================================
+
+dev="${DEVICENAME:-$INTERFACE}"
+case "$dev" in
+	lan*|br-lan|eth0|wan) ;;
+	*) exit 0 ;;
+esac
+
+# 1. Disable 802.3az EEE on MT7530 switch ports to stop laptop NIC link drops
+if command -v ethtool >/dev/null 2>&1; then
+	for p in lan1 lan2 lan3 wan; do
+		[ -d "/sys/class/net/$p" ] || continue
+		ethtool --set-eee "$p" eee off 2>/dev/null || true
+	done
+fi
+
+# 2. Ensure br-lan never suppresses ARP/DHCP or delays port forwarding
+if [ -d /sys/class/net/br-lan/bridge ]; then
+	printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
+	printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
+	printf '3000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
+	printf '0' > /sys/class/net/br-lan/bridge/multicast_snooping 2>/dev/null || true
+fi
+
+for bp in /sys/class/net/br-lan/brif/*; do
+	[ -d "$bp" ] || continue
+	[ -w "$bp/neigh_suppress" ] && printf '0' > "$bp/neigh_suppress" 2>/dev/null || true
+	[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
+done
+
+# 3. Clear virtual DSA slave RPS so LAN packets aren't bounced across VPEs 3 times
+for vdev in lan1 lan2 lan3 br-lan; do
+	[ -w "/sys/class/net/$vdev/queues/rx-0/rps_cpus" ] && 		printf '0' > "/sys/class/net/$vdev/queues/rx-0/rps_cpus" 2>/dev/null || true
+done
+
+# 4. Flush stale/failed ARP entries on br-lan so a newly plugged laptop connects in 0ms
+ip neigh flush dev br-lan nud failed 2>/dev/null || true
+ip neigh flush dev br-lan nud incomplete 2>/dev/null || true
+exit 0

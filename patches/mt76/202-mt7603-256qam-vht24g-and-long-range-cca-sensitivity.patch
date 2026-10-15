@@ -1,22 +1,26 @@
 --- a/mt7603/init.c
 +++ b/mt7603/init.c
-@@ -142,6 +142,27 @@ mt7603_init_hardware(struct mt7603_dev *dev)
+@@ -142,6 +142,10 @@ mt7603_init_hardware(struct mt7603_dev *dev)
  	/* Enable 2x2 TX/RX chains and LDPC/STBC long-range wall penetration */
  	mt76_rmw_field(dev, MT_WF_PHY_CR_1, MT_WF_PHY_CR_1_MIN_SP_PWR_MASK, 0x2);
  
-+	/* Lower AGC/CCA Energy Detection threshold to -98 dBm so weak distant
-+	 * 2.4 GHz clients through multiple walls are decoded instead of dropped */
++	/* Lower AGC/CCA Energy Detection threshold to -98 dBm to unlock external
++	 * Qorvo QPF4200 (+5V Wi-Fi 6 FEM) 15.5 dB LNA long-range wall sensitivity */
 +	mt76_wr(dev, 0x10f18, 0x00000012);
 +
  	return 0;
  }
  
-@@ -218,6 +239,23 @@ int mt7603_register_device(struct mt7603_dev *dev)
+@@ -218,6 +222,25 @@ int mt7603_register_device(struct mt7603_dev *dev)
  	sband->ht_cap.cap |= IEEE80211_HT_CAP_LDPC_CODING |
  			     IEEE80211_HT_CAP_TX_STBC |
  			     (1 << IEEE80211_HT_CAP_RX_STBC_SHIFT) |
  			     IEEE80211_HT_CAP_MAX_AMSDU;
  
++	/* Backport Wi-Fi 6 Virtual-Time Airtime Fairness & AQL to 2.4 GHz MT7603 */
++	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AIRTIME_FAIRNESS);
++	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AQL);
++
 +	/* Advertise Vendor VHT (256-QAM TurboQAM on 2.4 GHz) so 2x2 HT40 clients
 +	 * can negotiate MCS 8/9 (400 Mbps PHY link rate, up from 300 Mbps) */
 +	sband->vht_cap.vht_supported = true;

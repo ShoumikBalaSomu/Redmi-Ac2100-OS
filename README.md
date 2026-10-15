@@ -1,6 +1,6 @@
-# NexRouter v3.5 — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
+# NexRouter v3.6 — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USERNAME/Redmi-Ac2100-OS/blob/main/colab/NexRouter_OpenWrt_Builder.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ShoumikBalaSomu/Redmi-Ac2100-OS/blob/main/colab/NexRouter_OpenWrt_Builder.ipynb)
 ![OpenWrt Snapshot](https://img.shields.io/badge/OpenWrt-SNAPSHOT%20%7C%2024.10.2-00B5E2?logo=openwrt)
 ![Target](https://img.shields.io/badge/Target-ramips%2Fmt7621%20(RM2100)-success)
 
@@ -9,7 +9,7 @@ Custom Kernel 6.6/6.18, `mt76` Wireless Driver, Wi-Fi 6 MAC Backport Stack, and 
 
 ---
 
-## 0. NexRouter v3.5 Fix for 294 Mbps Wireless Download (When LAN = 1 Gbps & Upload = 460 Mbps)
+## 0. NexRouter v3.6 Fix for 294 Mbps Wireless Download (When LAN = 1 Gbps & Upload = 460 Mbps)
 
 ### Root Cause Diagnosis of Your Speedtest (`294 Mbps` Download / `7 ms` Loaded Ping vs `460 Mbps` Upload / `1 Gbps` LAN)
 1. **3-Second `wiphy_lock` & MCU TX Queue Stalls (`farlink-daemon`)**: Calling `iw dev set txpower`, `iw phy set rts`, and `ubus call hostapd update_airtime` unconditionally every 3 seconds acquired the kernel `wiphy_lock` mutex and paused the `MT7615N` Andes N9 MCU TX aggregation rings 3–4 times during every 10-second Speedtest download.
@@ -18,10 +18,24 @@ Custom Kernel 6.6/6.18, `mt76` Wireless Driver, Wi-Fi 6 MAC Backport Stack, and 
 4. **Cross-Core L1 Cache Bouncing on `MT7621AT` (`WAN -> 5 GHz` Download)**: Unlike `WAN <-> LAN` (1 Gbps in hardware PPE) or `5 GHz -> WAN` Upload (egress offloaded by PPE), `WAN -> 5 GHz` Download on mainline `mt7615e` traverses the MIPS CPU. Having `eth0` on Core 0 (`VPE0`), `rps_cpus=a`, `threaded=1` on `eth0`, and `MT7615N` on Core 1 (`VPE2`) bounced every Download `sk_buff` across Core 0 and Core 1's separate 32 KB L1 D-caches.
 5. **WMM `tx_queue_data2_burst` Overrides & `uapsd`/`wnm_sleep_mode`**: Triggered Android power-save micro-sleeps between TCP download windows.
 
-### How NexRouter v3.5 Fixes All 5 Bottlenecks
+### How NexRouter v3.6 Fixes All 5 Bottlenecks
 - **Edge-Triggered `farlink-daemon`**: Only invokes `iw` or `hostapd` when temperature crosses the `78 °C`/`73 °C` hysteresis or when the active bandit arm actually changes—zero `wiphy_lock` interruptions during downloads.
 - **Deep 64-MPDU AQL Window (`16,000`–`32,000` µs, threshold `48,000` µs) & `rts=2347`**: Allows `MT7615N` to pack full 64-frame / 11,454-byte A-MPDUs continuously.
 - **Physical Core 1 L1 Cache Co-Location (`rps_cpus=c` on `eth0`/`wan`, `threaded=0` on `eth0`) + GRO/GSO 64 KB Super-Packets**: Keeps the entire `WAN RX -> mac80211 -> MT7615N PCIe0 TX` Download pipeline inside Core 1's shared 32 KB L1 cache (`VPE2` + `VPE3`) and merges 1,500-byte TCP segments into 64 KB GRO/GSO super-SKBs.
+
+
+---
+
+## 0A. NexRouter v3.6 Fix for Laptop Sometimes Blocked From Getting a LAN Connection (`lan1`–`lan3`)
+
+### Is It a Laptop Problem or a Router-Side OS Problem?
+**90% Router-Side OS Configuration + 10% Laptop `802.3az` EEE / Wi-Fi-to-LAN Roaming Interaction.**
+During our deep OS audit, we found **5 router-side mechanisms** that were intermittently blocking laptops on `lan1`/`lan2`/`lan3` from getting a DHCP IP or passing traffic:
+1. **`proxy_arp='1'` Poisoning `br-lan` ARP/DHCP Snooping (`99-nexrouter-firstboot`)**: Enabling `proxy_arp='1'` on bridged APs activated `hostapd` `x_snoop` (`neigh_suppress=1`) on `br-lan`. Whenever a laptop switched between Wi-Fi and Wired LAN or woke from sleep, `br-lan` suppressed ARP/DHCP responses. **Fixed in v3.6**: `proxy_arp='0'` and `neigh_suppress=0` across all `br-lan` ports.
+2. **Missing `authoritative='1'` & `rapid_commit='1'` in `dnsmasq` (`99-nexrouter-firstboot`)**: When a laptop plugged into LAN or woke from sleep and requested its previous IP, non-authoritative `dnsmasq` silently ignored the `DHCPREQUEST`, leaving the laptop stuck on `169.254.x.x` ("Unidentified Network / No Internet"). **Fixed in v3.6**: `authoritative='1'`, `rapid_commit='1'`, and `dhcp.lan.force='1'`.
+3. **`MT7530` Gigabit Switch `802.3az` EEE (Green Ethernet) Link-Flap Bug (`30-nexrouter-lan-heal` + Patch `103`)**: The `MT7530` switch PHYs lose lock with Realtek (`RTL8111`/`RTL8153`) and Intel (`I219`/`I225`) laptop NICs when entering `802.3az` Low-Power Idle. **Fixed in v3.6**: Automatically disables EEE (`ethtool --set-eee lan1..3 eee off`) at boot and on port link-up.
+4. **Triple-RPS Packet Bouncing on Virtual DSA Ports (`nexrouter-core`)**: Setting `rps_cpus='2'` on virtual DSA slaves (`lan1`–`lan3`) and `br-lan` after `eth0` already ran RPS bounced wired LAN packets across CPU cores 3 times. **Fixed in v3.6**: `rps_cpus=0` on virtual DSA slaves (`lan1`–`lan3`, `br-lan`).
+5. **Strict `rp_filter=1` & Missing `nf_conntrack_tcp_be_liberal=1` (`99-nexrouter.conf`)**: Strict reverse-path filtering (`rp_filter=1`) dropped packets when a laptop had both Wi-Fi and Ethernet active simultaneously, and `tcp_be_liberal=0` dropped offloaded PPE TCP flows on window updates. **Fixed in v3.6**: `rp_filter=2` (Loose RFC 3704) + `nf_conntrack_tcp_be_liberal=1`.
 
 ---
 
@@ -29,7 +43,7 @@ Custom Kernel 6.6/6.18, `mt76` Wireless Driver, Wi-Fi 6 MAC Backport Stack, and 
 
 You can build the complete `.bin` sysupgrade ROM in **~3 minutes** in your browser using Google Colab—no local Linux PC or WSL2 needed:
 
-1. **Click the Colab Button above** (after pushing this repo to your GitHub, replace `YOUR_GITHUB_USERNAME/Redmi-Ac2100-OS` in the link above with your GitHub repo path) — **OR** open [Google Colab](https://colab.research.google.com/) and upload `colab/NexRouter_OpenWrt_Builder.ipynb` from this repo.
+1. **Click the Colab Button above** (after pushing this repo to your GitHub, replace `ShoumikBalaSomu/Redmi-Ac2100-OS` in the link above with your GitHub repo path) — **OR** open [Google Colab](https://colab.research.google.com/) and upload `colab/NexRouter_OpenWrt_Builder.ipynb` from this repo.
 2. **Choose your `BUILD_TRACK` in Cell 3**:
    - **`snapshot` (Default)**: Builds against the **latest OpenWrt `snapshot`** (`https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/`) with automatic `apk`/`opkg` feed detection, 64 MiB ZRAM Virtual RAM, Qorvo `QPF4200` 2.4 GHz FEM calibration, Wi-Fi 6 OBSS-PD Spatial Reuse, and the AI-RF Contextual Bandit.
    - **`24.10.2`**: Builds against stable OpenWrt `24.10.2` LTS with bundled `luci-theme-argon` + `luci-app-argon-config`.
@@ -40,7 +54,7 @@ You can build the complete `.bin` sysupgrade ROM in **~3 minutes** in your brows
 
 ## 2. Optional Admin Password in `/nex/` Portal & LuCI Argon
 
-By default, NexRouter v3.5 ships in **Passwordless Mode** so `http://192.168.1.1/nex/` and `http://192.168.1.1/cgi-bin/luci/` open immediately without blocking you on a login screen.
+By default, NexRouter v3.6 ships in **Passwordless Mode** so `http://192.168.1.1/nex/` and `http://192.168.1.1/cgi-bin/luci/` open immediately without blocking you on a login screen.
 
 Whenever you want to add or remove a password, you can do it from **either** web portal (both update `/etc/shadow` for `root`, so `/nex/`, LuCI Argon, and SSH stay in sync):
 
@@ -55,7 +69,7 @@ Whenever you want to add or remove a password, you can do it from **either** web
 
 ## 3. Software-Only Upgrades Pushed Between Your Present Stock Chips (Zero Soldering)
 
-| Stock Chip on Your Board | Physical Spec | Software-Only Upgrade Pushed in NexRouter v3.5 |
+| Stock Chip on Your Board | Physical Spec | Software-Only Upgrade Pushed in NexRouter v3.6 |
 |---|---|---|
 | **1. `ESMT M15T1G1664A` (DRAM)** | **128 MiB** 16-bit DDR3-1600 | **64 MiB ZRAM Compressed Virtual RAM Multiplier (`nexrouter-core.sh` + `99-nexrouter-firstboot.sh`)**: Creates an in-RAM `lz4` / `lzo-rle` compressed swap block device across all 4 MIPS VPEs (`vm.page-cluster=0`, `vm.swappiness=100`). With ~3:1 compression, your stock **128 MiB DDR3 chip operates like ~190–210 MiB of effective RAM** with zero NAND flash wear. |
 | **2. `2× Qorvo QPF4200` (2.4 GHz FEMs)** | **Wi-Fi 6 Rated** +5V External PA/LNA (`33 dB` TX, `15.5 dB` LNA, `2.1 dB` NF) | **QPF4200 High-Gain LNA & 256-QAM 400 Mbps Unlock (`nexrouter-core.sh` + Patch `202`)**: Programs `MT7603EN` register `0x10f18 = 0x00000012` at boot to unlock the QPF4200's full `15.5 dB` RX LNA gain (`-98 dBm` sensitivity floor) and enables `vendor_vht='1'` (256-QAM VHT40) so 2.4 GHz links at **400 Mbps PHY** (up from 300 Mbps). |

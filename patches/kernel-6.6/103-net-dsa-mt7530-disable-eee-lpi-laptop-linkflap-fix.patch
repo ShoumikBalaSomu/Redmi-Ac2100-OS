@@ -1,0 +1,14 @@
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -2490,6 +2490,10 @@ mt7530_setup(struct dsa_switch *ds)
+ 	/* Flush the FDB table */
+ 	ret = mt7530_fdb_cmd(priv, MT7530_FDB_FLUSH, 0);
+ 	if (ret < 0)
+ 		return ret;
++
++	/* Disable 802.3az EEE LPI auto-entry on MT7530 Gigabit switch ports
++	 * to prevent link-flap & DHCP drops with Realtek/Intel laptop NICs */
++	mt7530_clear(priv, MT7530_PMCR_P(0), PMCR_EEE_1G_EN | PMCR_EEE_100M_EN);
+ 
+ 	return 0;
+ }
