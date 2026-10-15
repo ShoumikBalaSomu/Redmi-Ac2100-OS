@@ -9,6 +9,8 @@
 					"profiles",
 					"wifi",
 					"farlink",
+					"doh_get",
+					"hardware_chips",
 					"overclock",
 					"recovery",
 					"export_get",
@@ -38,6 +40,7 @@
 					"apply_profile",
 					"set_offload",
 					"export_set",
+					"doh_set",
 					"insight_config_set"
 				]
 			}

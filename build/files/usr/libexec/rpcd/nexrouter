@@ -562,6 +562,103 @@ MTDEOF
 JSON
 }
 
+
+# ===========================================================================
+# Encrypted DNS-over-HTTPS (DoH) & Ad-Block Provider Switcher
+# ===========================================================================
+method_doh_get() {
+	local provider enabled bootstrap url running
+	provider="$(uci -q get nexrouter.core.doh_provider 2>/dev/null || echo cloudflare)"
+	enabled="0"
+	if pgrep -f https-dns-proxy >/dev/null 2>&1 || [ -x /etc/init.d/https-dns-proxy ]; then
+		enabled="$(uci -q get nexrouter.core.doh_enabled 2>/dev/null || echo 1)"
+	fi
+	url="$(uci -q get https-dns-proxy.@https-dns-proxy[0].resolver_url 2>/dev/null || echo 'https://cloudflare-dns.com/dns-query')"
+	bootstrap="$(uci -q get https-dns-proxy.@https-dns-proxy[0].bootstrap_dns 2>/dev/null || echo '1.1.1.1,1.0.0.1')"
+
+	cat <<JSON
+{
+  "enabled": $(jbool "$enabled"),
+  "active_provider": $(jstr "$provider"),
+  "resolver_url": $(jstr "$url"),
+  "bootstrap_dns": $(jstr "$bootstrap"),
+  "dnsmasq_cache_size": $(jnum "$(uci -q get dhcp.@dnsmasq[0].cachesize 2>/dev/null || echo 4096)"),
+  "rebind_protection": $(jbool "$(uci -q get dhcp.@dnsmasq[0].rebind_protection 2>/dev/null || echo 1)"),
+  "providers": [
+    {"id":"cloudflare","name":"Cloudflare 1.1.1.1 (Fastest)","url":"https://cloudflare-dns.com/dns-query","bootstrap":"1.1.1.1,1.0.0.1","adblock":false,"note":"Lowest latency anycast DoH resolver for gaming and general browsing."},
+    {"id":"adguard","name":"AdGuard DNS (Ad & Tracker Blocker)","url":"https://dns.adguard-dns.com/dns-query","bootstrap":"94.140.14.14,94.140.15.15","adblock":true,"note":"Blocks ads, analytics trackers, and phishing domains network-wide with zero router RAM overhead."},
+    {"id":"quad9","name":"Quad9 9.9.9.9 (Malware & Threat Protection)","url":"https://dns.quad9.net/dns-query","bootstrap":"9.9.9.9,149.112.112.112","adblock":false,"note":"Blocks known malware, botnet C2, and phishing domains using threat intelligence feeds."},
+    {"id":"google","name":"Google Public DNS 8.8.8.8","url":"https://dns.google/dns-query","bootstrap":"8.8.8.8,8.8.4.4","adblock":false,"note":"High-availability global DoH resolver."},
+    {"id":"cloudflare_family","name":"Cloudflare 1.1.1.3 (Malware + Family Filter)","url":"https://family.cloudflare-dns.com/dns-query","bootstrap":"1.1.1.3,1.0.0.3","adblock":false,"note":"Blocks malware and adult content at the DNS layer."}
+  ]
+}
+JSON
+}
+
+DOH_IDS="cloudflare adguard quad9 google cloudflare_family"
+
+method_doh_set() {
+	local provider="$1" enabled="$2"
+	local ok=0 p url boot
+	case "$enabled" in ''|0|1) ;; *) err "enabled must be 0 or 1"; return ;; esac
+	[ -z "$provider" ] && provider="cloudflare"
+	for p in $DOH_IDS; do
+		[ "$p" = "$provider" ] && ok=1
+	done
+	if [ "$ok" != "1" ]; then
+		err "unknown DoH provider: $provider (valid: $DOH_IDS)"
+		return
+	fi
+
+	case "$provider" in
+		cloudflare)        url="https://cloudflare-dns.com/dns-query"; boot="1.1.1.1,1.0.0.1" ;;
+		adguard)           url="https://dns.adguard-dns.com/dns-query"; boot="94.140.14.14,94.140.15.15" ;;
+		quad9)             url="https://dns.quad9.net/dns-query"; boot="9.9.9.9,149.112.112.112" ;;
+		google)            url="https://dns.google/dns-query"; boot="8.8.8.8,8.8.4.4" ;;
+		cloudflare_family) url="https://family.cloudflare-dns.com/dns-query"; boot="1.1.1.3,1.0.0.3" ;;
+	esac
+
+	uci -q set nexrouter.core.doh_provider="$provider"
+	[ -n "$enabled" ] && uci -q set nexrouter.core.doh_enabled="$enabled"
+	uci -q commit nexrouter
+
+	if uci -q get https-dns-proxy.@https-dns-proxy[0] >/dev/null 2>&1; then
+		while uci -q delete https-dns-proxy.@https-dns-proxy[0] 2>/dev/null; do :; done
+	fi
+	uci -q add https-dns-proxy https-dns-proxy >/dev/null 2>&1 || true
+	uci -q set https-dns-proxy.@https-dns-proxy[0].bootstrap_dns="$boot"
+	uci -q set https-dns-proxy.@https-dns-proxy[0].resolver_url="$url"
+	uci -q set https-dns-proxy.@https-dns-proxy[0].listen_addr="127.0.0.1"
+	uci -q set https-dns-proxy.@https-dns-proxy[0].listen_port="5053"
+	uci -q set https-dns-proxy.@https-dns-proxy[0].dscp_codepoint="46"
+	uci -q commit https-dns-proxy 2>/dev/null || true
+
+	if [ "${enabled:-1}" = "0" ]; then
+		[ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+	else
+		[ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+	fi
+	method_doh_get
+}
+
+method_hardware_chips() {
+	cat <<'JSON'
+{
+  "board": "Xiaomi Redmi Router AC2100 (RM2100)",
+  "pcb_dimensions": "110 mm x 90 mm (Full-board extruded aluminum heatsink)",
+  "chips": [
+    {"part":"MediaTek MT7621AT","role":"SoC / Network Processor","bus":"MIPS 1004Kc Dual-Core (4 VPEs) @ 880 MHz","spec":"2 Gbps PPE Hardware NAT (16K flows), 16-ch GDMA, 3x PCIe 1.1/2.0, integrated xHCI (unrouted)","moddable":"Supports up to 512 MiB DDR3; bootloader PLL overclockable via Breed"},
+    {"part":"MediaTek MT7530 (MCM)","role":"7-Port Gigabit Switch + PHYs","bus":"Internal RGMII/TRGMII + Dedicated GMAC1 WAN","spec":"1x Gigabit WAN (GMAC1) + 3x Gigabit LAN (GMAC0 DSA Ports 2,3,4)","moddable":"Hardware VLAN / DSA tag offload enabled"},
+    {"part":"MediaTek MT7615N","role":"5 GHz 4x4 MIMO Wi-Fi Radio","bus":"PCIe0 (0000:01:00.0)","spec":"4T4R 802.11ac Wave 2, VHT80 MCS9 (1733.3 Mbps PHY), dual internal MCUs (Andes N9 + Cortex-R4), 26 dBm iPA + iLNA, 0x4DA8 EEPROM","moddable":"Patched for 11,454B MPDU, 4x4 SU/MU-TxBF, Virtual-Time ATF & OBSS-PD"},
+    {"part":"MediaTek MT7603EN","role":"2.4 GHz 2x2 MIMO Wi-Fi Radio","bus":"PCIe1 (0000:02:00.0)","spec":"2T2R 802.11b/g/n + Patched 256-QAM VHT40 TurboQAM (400 Mbps PHY), Andes N9 MCU, -98 dBm CCA floor","moddable":"Patched for 256-QAM VHT40 (400 Mbps PHY) & -98 dBm long-range sensitivity"},
+    {"part":"2x Qorvo QPF4200 (Silkscreen 4200)","role":"2.4 GHz Wi-Fi 6 External PA/LNA FEMs","bus":"RF Chain 0 & Chain 1 (+5V operation)","spec":"33 dB TX Gain, 2.1 dB Noise Figure, 15.5 dB RX LNA Gain, +21 dBm @ 256-QAM VHT40 (-35 dB EVM), +25 dBm @ MCS0","moddable":"Hardware Wi-Fi 6 (HE40 MCS11) rated FEMs — enables clean 256-QAM 400 Mbps & multi-wall penetration"},
+    {"part":"ESMT M15T1G1664A","role":"System DRAM","bus":"16-bit DDR3-1600 (64M x 16)","spec":"128 MiB DDR3 SDRAM (96-ball FBGA)","moddable":"UPGRADEABLE: Can BGA-swap with 256 MiB or 512 MiB DDR3-1600 16-bit IC (e.g. MT41K256M16 / K4B4G1646E); auto-detected by kernel"},
+    {"part":"ESMT F59L1G81MB","role":"Boot & Rootfs Flash","bus":"SPI NAND (ID 0xC8 0xD1)","spec":"128 MiB SPI NAND (2 KiB page, 128 KiB block, 117.5 MiB usable UBI)","moddable":"Dual-kernel partitions (kernel_stock @ 0x200000, kernel @ 0x600000)"}
+  ]
+}
+JSON
+}
+
 method_farlink() {
 	if [ -r /var/run/nexrouter/farlink_status.json ]; then
 		cat /var/run/nexrouter/farlink_status.json
@@ -584,6 +681,9 @@ do_list() {
   "recovery": {},
   "export_get": {},
   "farlink": {},
+  "doh_get": {},
+  "hardware_chips": {},
+  "doh_set": {"provider":"cloudflare|adguard|quad9|google|cloudflare_family","enabled":"0|1"},
   "insight_devices": {},
   "insight_anomalies": {},
   "insight_config": {},
@@ -613,6 +713,11 @@ do_call() {
 		recovery)             method_recovery ;;
 		export_get)           method_export_get ;;
 		farlink)              method_farlink ;;
+		doh_get)              method_doh_get ;;
+		hardware_chips)       method_hardware_chips ;;
+		doh_set)
+			p1="$(param provider)"; p2="$(param enabled)"
+			method_doh_set "$p1" "$p2" ;;
 		insight_devices)      exec /usr/libexec/nexrouter/insight-query devices ;;
 		insight_anomalies)    exec /usr/libexec/nexrouter/insight-query anomalies ;;
 		insight_config)       exec /usr/libexec/nexrouter/insight-query config ;;

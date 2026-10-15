@@ -91,6 +91,8 @@ const cfg = {
   exportCollector: '',
   exportPort: 2056,
   windowMinutes: 15,
+  dohEnabled: true,
+  dohProvider: 'cloudflare',
 };
 
 const PROFILES = {
@@ -376,6 +378,61 @@ const nexrouter = {
       ],
       driver: 'mt76',
       note: 'mt76 is the mainline driver. It has improved substantially but still trails the MediaTek proprietary driver used by stock firmware, particularly on 5 GHz (MT7615N). WED is not available on this SoC generation.',
+    };
+  },
+
+  doh_get() {
+    const map = {
+      cloudflare: { url: 'https://cloudflare-dns.com/dns-query', boot: '1.1.1.1,1.0.0.1' },
+      adguard: { url: 'https://dns.adguard-dns.com/dns-query', boot: '94.140.14.14,94.140.15.15' },
+      quad9: { url: 'https://dns.quad9.net/dns-query', boot: '9.9.9.9,149.112.112.112' },
+      google: { url: 'https://dns.google/dns-query', boot: '8.8.8.8,8.8.4.4' },
+      cloudflare_family: { url: 'https://family.cloudflare-dns.com/dns-query', boot: '1.1.1.3,1.0.0.3' },
+    };
+    const cur = map[cfg.dohProvider] ?? map.cloudflare;
+    return {
+      enabled: cfg.dohEnabled,
+      active_provider: cfg.dohProvider,
+      resolver_url: cur.url,
+      bootstrap_dns: cur.boot,
+      dnsmasq_cache_size: 4096,
+      rebind_protection: true,
+      providers: [
+        { id: 'cloudflare', name: 'Cloudflare 1.1.1.1 (Fastest)', url: 'https://cloudflare-dns.com/dns-query', bootstrap: '1.1.1.1,1.0.0.1', adblock: false, note: 'Lowest latency anycast DoH resolver for gaming and general browsing.' },
+        { id: 'adguard', name: 'AdGuard DNS (Ad & Tracker Blocker)', url: 'https://dns.adguard-dns.com/dns-query', bootstrap: '94.140.14.14,94.140.15.15', adblock: true, note: 'Blocks ads, analytics trackers, and phishing domains network-wide with zero router RAM overhead.' },
+        { id: 'quad9', name: 'Quad9 9.9.9.9 (Malware & Threat Protection)', url: 'https://dns.quad9.net/dns-query', bootstrap: '9.9.9.9,149.112.112.112', adblock: false, note: 'Blocks known malware, botnet C2, and phishing domains using threat intelligence feeds.' },
+        { id: 'google', name: 'Google Public DNS 8.8.8.8', url: 'https://dns.google/dns-query', bootstrap: '8.8.8.8,8.8.4.4', adblock: false, note: 'High-availability global DoH resolver.' },
+        { id: 'cloudflare_family', name: 'Cloudflare 1.1.1.3 (Malware + Family Filter)', url: 'https://family.cloudflare-dns.com/dns-query', bootstrap: '1.1.1.3,1.0.0.3', adblock: false, note: 'Blocks malware and adult content at the DNS layer.' },
+      ],
+    };
+  },
+
+  doh_set({ provider, enabled } = {}) {
+    const valid = ['cloudflare', 'adguard', 'quad9', 'google', 'cloudflare_family'];
+    if (enabled !== undefined) {
+      if (!/^[01]$/.test(String(enabled))) return { error: 'enabled must be 0 or 1' };
+      cfg.dohEnabled = String(enabled) === '1';
+    }
+    if (provider !== undefined && provider !== '') {
+      if (!valid.includes(provider)) return { error: `unknown DoH provider: ${provider}` };
+      cfg.dohProvider = provider;
+    }
+    return this.doh_get();
+  },
+
+  hardware_chips() {
+    return {
+      board: 'Xiaomi Redmi Router AC2100 (RM2100)',
+      pcb_dimensions: '110 mm x 90 mm (Full-board extruded aluminum heatsink)',
+      chips: [
+        { part: 'MediaTek MT7621AT', role: 'SoC / Network Processor', bus: 'MIPS 1004Kc Dual-Core (4 VPEs) @ 880 MHz', spec: '2 Gbps PPE Hardware NAT (16K flows), 16-ch GDMA, 3x PCIe 1.1/2.0', moddable: 'Supports 512 MiB DDR3 BGA swap' },
+        { part: 'MediaTek MT7530 (MCM)', role: '7-Port Gigabit Switch + PHYs', bus: 'Internal RGMII/TRGMII + Dedicated GMAC1 WAN', spec: '1x Gigabit WAN (GMAC1) + 3x Gigabit LAN (GMAC0 DSA Ports 2,3,4)', moddable: 'Hardware VLAN / DSA tag offload enabled' },
+        { part: 'MediaTek MT7615N', role: '5 GHz 4x4 MIMO Wi-Fi Radio', bus: 'PCIe0 (0000:01:00.0)', spec: '4T4R 802.11ac Wave 2, VHT80 MCS9 (1733.3 Mbps PHY), Andes N9 + Cortex-R4 MCUs, 26 dBm iPA', moddable: 'Patched for 11,454B MPDU, 4x4 SU/MU-TxBF, Virtual-Time ATF & OBSS-PD' },
+        { part: 'MediaTek MT7603EN', role: '2.4 GHz 2x2 MIMO Wi-Fi Radio', bus: 'PCIe1 (0000:02:00.0)', spec: '2T2R 802.11b/g/n + Patched 256-QAM VHT40 TurboQAM (400 Mbps PHY), Andes N9 MCU', moddable: 'Patched for 256-QAM VHT40 (400 Mbps PHY) & -98 dBm sensitivity' },
+        { part: '2x Qorvo QPF4200 (4200)', role: '2.4 GHz Wi-Fi 6 External PA/LNA FEMs', bus: 'RF Chain 0 & Chain 1 (+5V)', spec: '33 dB TX Gain, 2.1 dB NF, 15.5 dB RX LNA Gain, +21 dBm @ 256-QAM VHT40', moddable: 'Hardware Wi-Fi 6 (HE40 MCS11) rated FEMs' },
+        { part: 'ESMT M15T1G1664A', role: 'System DRAM', bus: '16-bit DDR3-1600 (64M x 16)', spec: '128 MiB DDR3 SDRAM (96-ball FBGA)', moddable: 'UPGRADEABLE: BGA-swap to 256 MiB or 512 MiB DDR3-1600' },
+        { part: 'ESMT F59L1G81MB', role: 'Boot & Rootfs Flash', bus: 'SPI NAND (ID 0xC8 0xD1)', spec: '128 MiB SPI NAND (117.5 MiB usable UBI)', moddable: 'Dual-kernel fallback partitions' },
+      ],
     };
   },
 
@@ -709,6 +766,8 @@ export function resetMockState() {
   cfg.exportCollector = '';
   cfg.exportPort = 2056;
   cfg.windowMinutes = 15;
+  cfg.dohEnabled = true;
+  cfg.dohProvider = 'cloudflare';
   hwFlows = 0;
   swFlows = 0;
   return cfg;

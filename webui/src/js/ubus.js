@@ -287,6 +287,14 @@ export class UbusClient {
   profiles()          { return this.call('nexrouter', 'profiles'); }
   wifi()              { return this.call('nexrouter', 'wifi'); }
   farlink()           { return this.call('nexrouter', 'farlink'); }
+  dohGet()            { return this.call('nexrouter', 'doh_get'); }
+  hardwareChips()     { return this.call('nexrouter', 'hardware_chips'); }
+  setDoh({ provider, enabled }) {
+    return this.call('nexrouter', 'doh_set', {
+      ...(provider === undefined ? {} : { provider: String(provider) }),
+      ...(enabled === undefined ? {} : { enabled: enabled ? '1' : '0' }),
+    });
+  }
   overclock()         { return this.call('nexrouter', 'overclock'); }
   recovery()          { return this.call('nexrouter', 'recovery'); }
   exportGet()         { return this.call('nexrouter', 'export_get'); }

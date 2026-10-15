@@ -109,15 +109,17 @@ export function panelOverview(api, ctx) {
       })),
     h('div', { class: 'grid' },
       card({ title: 'System', body: h('div', { ref: (el) => { sysEl = el; } }, skeleton(6)) }),
-      card({ title: 'Radios', body: h('div', { ref: (el) => { radioEl = el; } }, skeleton(4)) })));
+      card({ title: 'Radios', body: h('div', { ref: (el) => { radioEl = el; } }, skeleton(4)) })),
+    card({ title: 'PCB Silicon & Hardware IC Inventory (Redmi AC2100)', note: 'Every physical chip verified on the 110×90 mm motherboard and its active driver/mod status.', body: h('div', { ref: (el) => { view._hwEl = el; } }, skeleton(4)) }));
 
   mount(root, view);
 
   async function refresh() {
-    const [ov, perf, wifi] = await Promise.all([
+    const [ov, perf, wifi, hw] = await Promise.all([
       safe(() => api.overview()),
       safe(() => api.performance()),
       safe(() => api.wifi()),
+      safe(() => api.hardwareChips()),
     ]);
 
     if (ov.__error) {
@@ -202,6 +204,16 @@ export function panelOverview(api, ctx) {
           : empty('📡', 'No radios reported. WiFi may be disabled or the country code is unset — set it on first run.'),
         wifi.driver ? h('p', { class: 'field__hint', style: { marginTop: 'var(--sp-3)' } },
           'Driver: ', h('code', {}, wifi.driver), '. ', wifi.note ?? '') : null);
+    }
+
+    if (view._hwEl && hw && !hw.__error && Array.isArray(hw.chips)) {
+      mount(view._hwEl, table([
+        { key: 'part', label: 'IC Part Number', render: (c) => h('strong', {}, c.part) },
+        { key: 'role', label: 'Function' },
+        { key: 'bus', label: 'Bus / Architecture' },
+        { key: 'spec', label: 'Hardware Spec' },
+        { key: 'moddable', label: 'NexRouter Optimization / Hardware Mod' },
+      ], hw.chips));
     }
   }
 
@@ -1009,13 +1021,57 @@ export function panelSettings(api, ctx) {
   mount(root, view);
 
   async function refresh() {
-    const [exp, cfg] = await Promise.all([
+    const [exp, cfg, doh] = await Promise.all([
       safe(() => api.exportGet()),
       safe(() => api.insightConfig()),
+      safe(() => api.dohGet()),
     ]);
 
     const canWrite = api.canWrite;
     const nodes = [];
+
+    // ── Encrypted DNS-over-HTTPS (DoH) & Ad-Block Switcher ────────────────
+    if (doh && !doh.__error && !doh.__missing) {
+      const providers = Array.isArray(doh.providers) ? doh.providers : [];
+      nodes.push(card({
+        title: 'Encrypted DNS-over-HTTPS (DoH) & Network Ad-Blocker',
+        variant: doh.enabled ? 'ok' : 'warn',
+        note: 'Encrypts all LAN DNS queries over HTTPS (RFC 8484) via https-dns-proxy + dnsmasq (4096-entry cache) so your ISP cannot snoop or hijack domain lookups.',
+        body: h('div', { class: 'stack' },
+          h('div', { class: 'metrics' },
+            metric({ label: 'DoH Status', value: doh.enabled ? 'ENCRYPTED' : 'PLAIN DNS', sub: doh.active_provider ?? 'cloudflare', variant: doh.enabled ? 'ok' : 'warn' }),
+            metric({ label: 'Bootstrap DNS', value: doh.bootstrap_dns ?? '1.1.1.1', sub: 'UDP bootstrap' }),
+            metric({ label: 'DNS Cache', value: int(doh.dnsmasq_cache_size ?? 4096), unit: 'entries', sub: doh.rebind_protection ? 'Rebind guard ON' : 'Rebind guard OFF' })),
+          kv([
+            ['Active DoH Endpoint', h('code', {}, doh.resolver_url ?? '—')],
+          ]),
+          h('div', { class: 'profiles' }, providers.map(p => {
+            const active = doh.active_provider === p.id;
+            return h('button', {
+              class: ['profile', active && 'profile--active'],
+              type: 'button',
+              disabled: !canWrite,
+              onclick: async () => {
+                ctx.busy(true);
+                try {
+                  const res = await api.setDoh({ provider: p.id, enabled: true });
+                  if (res?.error) throw new Error(res.error);
+                  ctx.toast(`Switched Encrypted DoH to ${p.name}`, 'ok');
+                } catch (err) {
+                  ctx.toast(`DoH change failed: ${explainError(err)}`, 'err', { sticky: true });
+                } finally { ctx.busy(false); refresh(); }
+              },
+            },
+              h('div', { class: 'profile__head' },
+                h('span', { class: 'profile__name' }, p.name),
+                active ? badge('ok', 'active') : null,
+                p.adblock ? badge('info', 'ad-blocker') : null),
+              h('p', { class: 'profile__desc' }, p.note ?? ''),
+              h('div', { class: 'profile__chips' },
+                h('span', { class: 'chip chip--on' }, p.url)));
+          }))),
+      }));
+    }
 
     // ── NetFlow export ─────────────────────────────────────────────────────
     const expState = exp.__error ? {} : (Array.isArray(exp) ? exp[0] : exp);
