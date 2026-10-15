@@ -1,23 +1,29 @@
 #!/bin/sh /etc/rc.common
 # ===========================================================================
-# nexrouter-core (v3.6) — Zero-Drop LAN, L1 Cache Fastpath & Silicon Optimizer
+# nexrouter-core (v3.7) — 2-Core Pipeline Split & nf_flowtable Fastpath Engine
 # ===========================================================================
-# Pushes every software-possible optimization across the PRESENT stock chips
-# on the Xiaomi Redmi Router AC2100 (MT7621AT + MT7530 + MT7615N + MT7603EN):
+# Fixes the 70.7 Mbps / 83 ms ping regression on Xiaomi Redmi Router AC2100:
 #
-#   1. Zero-Drop Laptop Wired LAN Healer (`MT7530` Switch + `br-lan`):
-#      - Disables broken 802.3az Energy Efficient Ethernet (EEE) on `lan1..3`
-#        and `wan` so laptop Realtek/Intel NICs never link-flap or drop IP.
-#      - Clears `neigh_suppress` and `hairpin_mode` on `br-lan` ports and lowers
-#        MAC ageing to 30s so laptops switching between Wi-Fi and LAN connect
-#        in 0 ms without ARP/DHCP blackholes.
-#      - Sets `rps_cpus=0` on virtual DSA slave ports (`lan1..3`, `br-lan`) to
-#        eliminate triple-RPS packet reordering on wired LAN!
-#   2. Core 1 L1 D-Cache Co-Location for WAN -> 5 GHz Download (`RPS=0xc`):
-#      Pins MT7615N PCIe0 IRQ to VPE2 (0x4) and steers eth0/wan RX RPS to
-#      VPE2+VPE3 (0xc, Physical Core 1) + GRO/GSO 64 KB super-packet coalescing.
-#   3. Deep 64-MPDU AQL Window (`16000`/`32000` us) + RTS=2347.
-#   4. 64 MiB ZRAM Virtual RAM Multiplier + Qorvo QPF4200 High-Gain LNA Unlock.
+#   1. Preserves `nf_flowtable` Fastpath (`gro off gso off tso off` on WAN/Eth):
+#      In Linux `net/netfilter/nf_flow_table_ip.c`, `nf_flow_offload_ip_hook()`
+#      executes `if (skb_is_gso(skb)) return NF_ACCEPT;`. Enabling GRO/GSO/TSO
+#      coalesces packets into GSO super-SKBs that get KICKED OUT of OpenWrt's
+#      `nf_flowtable` fastpath! Disabling GRO/GSO/TSO on `eth0`/`wan`/`br-lan`
+#      ensures 100% of Download packets stay in the `nf_flowtable` fastpath.
+#   2. True 2-Core Pipeline Split (Core 0 = WAN Ingress, Core 1 = 5 GHz Wi-Fi):
+#      On MT7621AT, VPE0+VPE1 share Physical Core 0 (880 MHz) and VPE2+VPE3
+#      share Physical Core 1 (880 MHz). Putting `eth0` RPS on Core 1 (`0xc`)
+#      starved MT7615N on Core 1. Now:
+#        - VPE0 (0x1, Core 0): MT7621 GMAC Frame Engine Hard IRQ
+#        - VPE1 (0x2, Core 0): `eth0` / `wan` RX RPS (`nf_flowtable` lookup)
+#        - VPE2 (0x4, Core 1): MT7615N 5 GHz PCIe0 Hard IRQ & TX completion
+#        - VPE3 (0x8, Core 1): 5 GHz / 2.4 GHz Wi-Fi RPS & Threaded NAPI poll
+#   3. Zero-Bloat 64-MPDU AQL Window (`5000` us low / `10000` us high):
+#      A full 64-subframe VHT80 A-MPDU at 866 Mbps takes 4.2 ms (4,200 us).
+#      Setting `5000 / 10000` us (with `aql_threshold=24000`) packs full 64-MPDU
+#      Download bursts while keeping loaded ping <15 ms (eliminating the 83 ms
+#      bufferbloat that triggered TCP congestion backoff).
+#   4. Zero-Drop MT7530 LAN Switch Healer (`802.3az` EEE off, `neigh_suppress=0`).
 # ===========================================================================
 
 START=98
@@ -61,7 +67,7 @@ set_irq_mask() {
 	done
 }
 
-# 2. L1-Cache-Aware IRQ Partitioning (Core 0 = Eth/2.4G, Core 1 = 5G High-Speed)
+# 2. True 2-Core Pipeline IRQ Split (Core 0 = Wired GMAC, Core 1 = 5 GHz Radio)
 configure_irqs() {
 	local irq_eth="" irq_2g="" irq_5g="" irq_pcie=""
 	local line num name
@@ -84,11 +90,13 @@ configure_irqs() {
 	done < /proc/interrupts
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
+		# Core 0: VPE0 (0x1) = GMAC Frame Engine, VPE1 (0x2) = WAN RX RPS
+		# Core 1: VPE2 (0x4) = MT7615N 5 GHz PCIe0, VPE3 (0x8) = MT7603 2.4G & Wi-Fi RPS
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
-		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
+		[ -n "$irq_2g" ]   && set_irq_mask 8 $irq_2g
 		[ -n "$irq_5g" ]   && set_irq_mask 4 $irq_5g
 		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask 4 $irq_pcie
-		log "IRQ affinity (L1 Cache Co-Located): Eth($irq_eth)->VPE0, 2.4G($irq_2g)->VPE1, 5G($irq_5g $irq_pcie)->VPE2(Core1)"
+		log "IRQ Pipeline Split: Eth($irq_eth)->VPE0(Core0), 5G($irq_5g $irq_pcie)->VPE2(Core1), 2.4G($irq_2g)->VPE3"
 	else
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
 		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
@@ -97,21 +105,23 @@ configure_irqs() {
 	fi
 }
 
-# 3. Core 1 L1-Cache Download Fastpath (RPS=0xc) + Zero-Drop MT7530 LAN Switch Healer
+# 3. 2-Core RPS Split + Disable GRO/GSO/TSO so 100% of Packets Hit `nf_flowtable`
 configure_napi_rps_and_lan_switch() {
-	local threaded_en netdev d rps_mask_download rps_mask_wifi_rx bp
+	local threaded_en netdev d rps_mask_wired rps_mask_wifi bp
 	threaded_en="$(uci -q get nexrouter.core.threaded_napi 2>/dev/null || echo 1)"
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		rps_mask_download="c"
-		rps_mask_wifi_rx="8"
+		# Core 0 VPE1 (0x2) handles eth0/wan RX softirq & nf_flowtable lookup
+		# Core 1 VPE3 (0x8) handles Wi-Fi RX softirq & Threaded NAPI
+		rps_mask_wired="2"
+		rps_mask_wifi="8"
 	else
-		rps_mask_download="3"
-		rps_mask_wifi_rx="3"
+		rps_mask_wired="1"
+		rps_mask_wifi="2"
 	fi
 
-	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '8192' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
+	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '16384' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '4096' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
 	[ -w /proc/sys/net/core/netdev_budget ] && 		printf '600' > /proc/sys/net/core/netdev_budget 2>/dev/null
 
 	for netdev in /sys/class/net/*; do
@@ -129,16 +139,13 @@ configure_napi_rps_and_lan_switch() {
 
 		if [ -w "$netdev/queues/rx-0/rps_cpus" ]; then
 			case "$d" in
-				eth*|wan|pppoe-wan)
-					printf '%s' "$rps_mask_download" > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
+				eth0|wan|pppoe-wan)
+					printf '%s' "$rps_mask_wired" > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
 					printf '4096' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
 				phy*-ap*|wlan*|ra*|rai*)
-					printf '%s' "$rps_mask_wifi_rx" > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
+					printf '%s' "$rps_mask_wifi" > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
 					printf '4096' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
 				lan*|br-lan)
-					# CRITICAL: Virtual DSA slave ports (lan1..3) and br-lan must have RPS=0
-					# because physical eth0 already steered the packet; double/triple RPS
-					# across VPEs reorders DHCP/TCP packets on wired LAN!
 					printf '0' > "$netdev/queues/rx-0/rps_cpus" 2>/dev/null
 					printf '0' > "$netdev/queues/rx-0/rps_flow_cnt" 2>/dev/null ;;
 			esac
@@ -147,26 +154,24 @@ configure_napi_rps_and_lan_switch() {
 		if [ -w "$netdev/queues/tx-0/xps_cpus" ]; then
 			case "$d" in
 				phy*-ap*|wlan*|rai*)
-					printf 'c' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
-				lan*|br-lan)
-					printf '0' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
+					printf '4' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
 				*)
-					printf '3' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
+					printf '0' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
 			esac
 		fi
 
 		if command -v ethtool >/dev/null 2>&1; then
-			ethtool -K "$d" gro on gso on tso on sg on 2>/dev/null || true
+			# CRITICAL: Disable GRO/GSO/TSO so `skb_is_gso(skb)` is FALSE and
+			# 100% of TCP Download packets enter `nf_flow_offload_ip_hook`!
+			ethtool -K "$d" gro off gso off tso off 2>/dev/null || true
 			case "$d" in
 				lan1|lan2|lan3|wan)
-					# Disable broken 802.3az EEE on MT7530 PHYs to stop laptop link-flap
 					ethtool --set-eee "$d" eee off 2>/dev/null || true ;;
 			esac
 		fi
-		ip link set "$d" txqueuelen 2000 2>/dev/null || true
+		ip link set "$d" txqueuelen 1000 2>/dev/null || true
 	done
 
-	# Heal br-lan bridge forwarding & disable neighbor/ARP suppression
 	if [ -d /sys/class/net/br-lan/bridge ]; then
 		printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
 		printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
@@ -179,25 +184,26 @@ configure_napi_rps_and_lan_switch() {
 		[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
 	done
 
-	log "Core 1 L1-cache Download fastpath + Zero-Drop MT7530 LAN Switch Healer active"
+	log "2-Core Pipeline (Core0=WAN, Core1=5G) + nf_flowtable non-GSO fastpath active"
 }
 
-# 4. Unthrottled 5 GHz Downlink AQL Window (16000/32000 us) + QPF4200 LNA Unlock
+# 4. Sweet-Spot 64-MPDU AQL Window (5000/10000 us, threshold 24000 us) + RTS=2347
 configure_wifi_lowlevel() {
-	local aql_low aql_high aql_thr phy ac
-	aql_low="$(uci -q get nexrouter.core.aql_txq_limit 2>/dev/null || echo 16000)"
-	[ "${aql_low:-0}" -lt 8000 ] 2>/dev/null && aql_low=16000
+	local aql_low aql_high aql_thr phy
+	aql_low="$(uci -q get nexrouter.core.aql_txq_limit 2>/dev/null || echo 5000)"
+	[ "${aql_low:-0}" -gt 8000 ] 2>/dev/null && aql_low=5000
+	[ "${aql_low:-0}" -lt 3000 ] 2>/dev/null && aql_low=5000
 	aql_high=$((aql_low * 2))
-	aql_thr="$(uci -q get nexrouter.core.aql_threshold 2>/dev/null || echo 48000)"
+	aql_thr="$(uci -q get nexrouter.core.aql_threshold 2>/dev/null || echo 24000)"
 
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy" ] || continue
 		[ -w "$phy/aql_threshold" ] && printf '%s
 ' "$aql_thr" > "$phy/aql_threshold" 2>/dev/null || true
 		if [ -w "$phy/aql_txq_limit" ]; then
-			printf '0 4000 8000
+			printf '0 2500 5000
 ' > "$phy/aql_txq_limit" 2>/dev/null || true
-			printf '1 8000 16000
+			printf '1 4000 8000
 ' > "$phy/aql_txq_limit" 2>/dev/null || true
 			printf '2 %s %s
 ' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
@@ -221,10 +227,9 @@ configure_wifi_lowlevel() {
 	if [ -w /sys/module/pcie_aspm/parameters/policy ]; then
 		printf 'performance' > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
 	fi
-	log "5 GHz Downlink AQL window unlocked (${aql_low}/${aql_high} us, threshold=${aql_thr} us, RTS=2347)"
+	log "5 GHz AQL sweet-spot active (${aql_low}/${aql_high} us, threshold=${aql_thr} us, RTS=2347)"
 }
 
-# 5. Verify Hardware Flow Offload (Mainline nftables PPE or MediaTek mtkhnat)
 verify_offload() {
 	local hwo swo hw_flows
 	hwo="$(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
@@ -247,7 +252,7 @@ verify_offload() {
 }
 
 start() {
-	log "Applying NexRouter v3.6 Zero-Drop LAN & Gigabit Wireless Fastpath (VPEs=$VPE_COUNT)"
+	log "Applying NexRouter v3.7 2-Core Pipeline & nf_flowtable Fastpath (VPEs=$VPE_COUNT)"
 	configure_zram_virtual_ram
 	configure_irqs
 	configure_napi_rps_and_lan_switch

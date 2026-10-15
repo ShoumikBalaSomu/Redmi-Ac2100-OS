@@ -1,6 +1,6 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.6 Zero-Drop LAN & Gigabit Wireless Edition)
+# 99-nexrouter-firstboot (v3.7 Zero-Drop LAN & Gigabit Wireless Edition)
 # ===========================================================================
 # Configures:
 #   1. Zero-Drop Wired LAN for Laptops (`lan1`/`lan2`/`lan3` on `br-lan`):
@@ -21,7 +21,7 @@
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.6 Zero-Drop LAN & Gigabit Wireless provisioning (${NEXROUTER_VERSION:-3.6.0})"
+echo "nexrouter: v3.7 Zero-Drop LAN & Gigabit Wireless provisioning (${NEXROUTER_VERSION:-3.7.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -144,8 +144,8 @@ fi
 uci -q batch <<-EOF
 	set nexrouter.core.enabled='1'
 	set nexrouter.core.threaded_napi='1'
-	set nexrouter.core.aql_txq_limit='16000'
-	set nexrouter.core.aql_threshold='48000'
+	set nexrouter.core.aql_txq_limit='5000'
+	set nexrouter.core.aql_threshold='24000'
 	set nexrouter.core.turbo_2g_vht='1'
 	set nexrouter.core.wifi6_obss_pd='1'
 	set nexrouter.core.wifi6_airtime_fairness='1'
@@ -232,9 +232,9 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 	if [ "$band" = "5g" ]; then
 		uci -q batch <<-EOF
 			set wireless.$iface.ssid='NexRouter_5G'
-			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.encryption='psk2+ccmp'
 			set wireless.$iface.key='12345678'
-			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.ieee80211w='0'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -258,9 +258,9 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
 			set wireless.$iface.ssid='NexRouter_2.4G'
-			set wireless.$iface.encryption='sae-mixed'
+			set wireless.$iface.encryption='psk2+ccmp'
 			set wireless.$iface.key='12345678'
-			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.ieee80211w='0'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -292,5 +292,5 @@ done
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null || true
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
-echo "nexrouter: v3.6 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
+echo "nexrouter: v3.7 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
 exit 0

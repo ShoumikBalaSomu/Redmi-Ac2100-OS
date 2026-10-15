@@ -1,8 +1,8 @@
 #!/bin/sh
 # ===========================================================================
-# NexRouter v3.5 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller
+# NexRouter v3.7 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller
 # ===========================================================================
-# Key v3.5 Fixes for Wireless Download Speed (600-850+ Mbps on 5 GHz):
+# Key v3.7 Fixes for Wireless Download Speed (600-850+ Mbps on 5 GHz):
 #   1. Edge-Triggered `nl80211` / MCU Updates (Zero TX Queue Stalls):
 #      Previously, calling `iw dev set txpower` and `iw phy set rts` every 3s
 #      acquired the kernel `wiphy_lock` and paused the MT7615N Andes N9 MCU TX
@@ -20,12 +20,12 @@ mkdir -p /var/run/nexrouter
 : > "$STA_WEIGHT_CACHE"
 
 # Reset legacy throttled bandit arms if upgrading from v3.0-v3.4
-if [ ! -s "$BANDIT_STATE" ] || grep -q '	2500	1536	' "$BANDIT_STATE" 2>/dev/null; then
+if [ ! -s "$BANDIT_STATE" ] || grep -qE '	(2500	1536|24000	2347)	' "$BANDIT_STATE" 2>/dev/null; then
 	cat << 'BEOF' > "$BANDIT_STATE"
-0	PEAK_AGGREGATION_1733M	24000	2347	1	85000
-1	BEAMFORM_BALANCED	16000	2347	1	82000
-2	WALLBREAKER_LONG_RANGE	8000	1536	1	75000
-3	DENSE_OBSS_SPATIAL_REUSE	6000	1536	1	75000
+0	PEAK_AGGREGATION_1733M	5000	2347	1	85000
+1	BEAMFORM_BALANCED	4000	2347	1	82000
+2	WALLBREAKER_LONG_RANGE	3000	1536	1	75000
+3	DENSE_OBSS_SPATIAL_REUSE	2500	1536	1	75000
 BEOF
 fi
 
@@ -153,7 +153,7 @@ update_sta_airtime_if_changed() {
 
 ACTIVE_ARM=0
 ACTIVE_ARM_NAME="PEAK_AGGREGATION_1733M"
-ACTIVE_AQL=24000
+ACTIVE_AQL=5000
 ACTIVE_RTS=2347
 OBSS_PD_MODE="ADAPTIVE_BALANCED"
 CCA_ED_DBM=-82
@@ -342,13 +342,13 @@ while :; do
 
 	cat <<SEOF > "$STATE_FILE"
 {
-  "engine": "NexRouter v3.5 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller",
+  "engine": "NexRouter v3.7 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller",
   "status": "running",
   "timestamp": $(date +%s),
   "algorithm": "Edge-Triggered UCB1 Bandit + 24ms AQL Aggregation + Core 1 L1 Fastpath",
   "active_arm_id": ${ACTIVE_ARM:-0},
   "active_profile": "${ACTIVE_ARM_NAME:-PEAK_AGGREGATION_1733M}",
-  "aql_txq_limit_us": ${ACTIVE_AQL:-24000},
+  "aql_txq_limit_us": ${ACTIVE_AQL:-5000},
   "rts_threshold": ${ACTIVE_RTS:-2347},
   "obss_pd_mode": "${OBSS_PD_MODE}",
   "cca_ed_threshold_dbm": ${CCA_ED_DBM:--82},
