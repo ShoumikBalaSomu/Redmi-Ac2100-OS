@@ -1,6 +1,6 @@
 # NexRouter v3.4 — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USERNAME/Redmi-Ac2100-OS/blob/main/colab/NexRouter_OpenWrt_Builder.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ShoumikBalaSomu/Redmi-Ac2100-OS/blob/main/colab/NexRouter_OpenWrt_Builder.ipynb)
 ![OpenWrt Snapshot](https://img.shields.io/badge/OpenWrt-SNAPSHOT%20%7C%2024.10.2-00B5E2?logo=openwrt)
 ![Target](https://img.shields.io/badge/Target-ramips%2Fmt7621%20(RM2100)-success)
 
@@ -12,7 +12,7 @@ Custom Kernel 6.6/6.18, `mt76` Wireless Driver, Wi-Fi 6 MAC Backport Stack, and 
 
 You can build the complete `.bin` sysupgrade ROM in **~3 minutes** in your browser using Google Colab—no local Linux PC or WSL2 needed:
 
-1. **Click the Colab Button above** (after pushing this repo to your GitHub, replace `YOUR_GITHUB_USERNAME/Redmi-Ac2100-OS` in the link above with your GitHub repo path) — **OR** open [Google Colab](https://colab.research.google.com/) and upload `colab/NexRouter_OpenWrt_Builder.ipynb` from this repo.
+1. **Click the Colab Button above** (after pushing this repo to your GitHub, replace `ShoumikBalaSomu/Redmi-Ac2100-OS` in the link above with your GitHub repo path) — **OR** open [Google Colab](https://colab.research.google.com/) and upload `colab/NexRouter_OpenWrt_Builder.ipynb` from this repo.
 2. **Choose your `BUILD_TRACK` in Cell 3**:
    - **`snapshot` (Default)**: Builds against the **latest OpenWrt `snapshot`** (`https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/`) with automatic `apk`/`opkg` feed detection, 64 MiB ZRAM Virtual RAM, Qorvo `QPF4200` 2.4 GHz FEM calibration, Wi-Fi 6 OBSS-PD Spatial Reuse, and the AI-RF Contextual Bandit.
    - **`24.10.2`**: Builds against stable OpenWrt `24.10.2` LTS with bundled `luci-theme-argon` + `luci-app-argon-config`.
