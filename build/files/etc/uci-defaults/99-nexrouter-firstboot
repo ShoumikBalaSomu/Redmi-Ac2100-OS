@@ -1,27 +1,25 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.7 Zero-Drop LAN & Gigabit Wireless Edition)
+# 99-nexrouter-firstboot (v3.8 Pure WPA3-SAE, VHT80P80 & Line-Rate Edition)
 # ===========================================================================
-# Configures:
-#   1. Zero-Drop Wired LAN for Laptops (`lan1`/`lan2`/`lan3` on `br-lan`):
-#      - Disables `proxy_arp` on bridged APs (`proxy_arp='0'`) so `hostapd`
-#        `x_snoop` never hijacks or blocks ARP/DHCP on `br-lan`!
-#      - Sets `dhcp.@dnsmasq[0].authoritative='1'` + `dhcp.lan.force='1'` so
-#        laptops waking from sleep or switching from Wi-Fi to LAN get instant
-#        DHCP leases instead of hanging on `169.254.x.x` ("Unidentified Network").
-#      - Configures `br-lan` (`stp='0'`, `forward_delay='0'`, `igmp_snooping='0'`)
-#        for 0 ms link-up forwarding on MT7530 switch ports.
-#   2. Unthrottled 5 GHz Wireless Download (600-850+ Mbps):
-#      - Deep AQL aggregation window (`aql_txq_limit='16000'` / `32000` us)
-#      - RTS disabled (`rts='2347'`), `uapsd='0'`, `wnm_sleep_mode='0'`
-#      - Core 1 L1 cache co-location (`packet_steering='0'`)
-#   3. Passwordless /nex/ Web Portal + Optional Password Setter in /nex/ & Argon
-#   4. 64 MiB ZRAM Compressed Virtual RAM on stock 128 MiB ESMT M15T1G1664A DDR3
+# Key Engineering Breakthroughs in v3.8:
+#   1. Eliminates the 294 Mbps Download Cap on 1 Gbps ISP Links:
+#      - Removes the default root `fq_codel` shaper on WAN (`20-nexrouter-qdisc`),
+#        which per `docs/03-performance-reality.md` §3 capped CPU-assisted flows
+#        at ~200-300 Mbps (294 Mbps)!
+#      - Sets `tx_stbc='0'` & `rx_stbc='0'` on 5 GHz so MT7615N transmits full
+#        2x2/4x4 Spatial Multiplexing (866.7 / 1733.3 Mbps PHY) instead of
+#        1-stream Space-Time Block Coding (433.3 Mbps PHY = 294 Mbps TCP).
+#      - Uses `country='US'` to unlock 30 dBm (1,000 mW) regulatory ceiling and
+#        both UNII-1 (Ch 36) + UNII-3 (Ch 149) for VHT80 & VHT80P80.
+#   2. Pure WPA3-Personal (`encryption='sae'`, `ieee80211w='2'`, `sae_pwe='2'`)
+#      on 5 GHz with `ocv='0'` and `ieee80211r='0'` (cleanest hardware CCMP-128).
+#   3. Zero-Drop Laptop LAN (`proxy_arp='0'`, authoritative DHCP, MT7530 EEE off).
 # ===========================================================================
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.7 Zero-Drop LAN & Gigabit Wireless provisioning (${NEXROUTER_VERSION:-3.7.0})"
+echo "nexrouter: v3.8 Pure WPA3-SAE, VHT80P80 & Line-Rate provisioning (${NEXROUTER_VERSION:-3.8.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -35,9 +33,9 @@ uci -q batch <<-EOF
 	commit firewall
 EOF
 
-# 2. Network & Bridge: Zero-Delay br-lan + L1 Cache Pinning
+# 2. Network & Bridge: Packet Steering + Zero-Delay br-lan
 uci -q batch <<-EOF
-	set network.globals.packet_steering='0'
+	set network.globals.packet_steering='1'
 	set network.lan.stp='0'
 	set network.lan.forward_delay='0'
 	set network.lan.igmp_snooping='0'
@@ -135,7 +133,7 @@ if uci -q get upnpd.config >/dev/null 2>&1; then
 	EOF
 fi
 
-# 7. Telemetry & AI-RF Contextual Bandit (Deep 16ms AQL Download Window)
+# 7. Telemetry & AI-RF Contextual Bandit Defaults (No WAN SQM Shaper by Default)
 if uci -q get softflowd.@softflowd[0] >/dev/null 2>&1; then
 	uci -q set softflowd.@softflowd[0].enabled='0'
 	uci -q commit softflowd
@@ -143,6 +141,7 @@ fi
 
 uci -q batch <<-EOF
 	set nexrouter.core.enabled='1'
+	set nexrouter.core.sqm_enabled='0'
 	set nexrouter.core.threaded_napi='1'
 	set nexrouter.core.aql_txq_limit='5000'
 	set nexrouter.core.aql_threshold='24000'
@@ -165,7 +164,7 @@ uci -q batch <<-EOF
 	commit nexrouter
 EOF
 
-# 8. Wireless: Unthrottled 1733M 5G Download + 400M 2.4G TurboQAM + proxy_arp='0'
+# 8. Wireless: Pure WPA3-SAE on 5 GHz + Full 2x2/4x4 Spatial Multiplexing (tx_stbc=0) + US Regdomain (30 dBm + UNII-1/UNII-3)
 [ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
 
 for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
@@ -174,23 +173,22 @@ for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' |
 		uci -q batch <<-EOF
 			set wireless.$dev.channel='149'
 			set wireless.$dev.htmode='VHT80'
-			set wireless.$dev.country='BD'
+			set wireless.$dev.country='US'
 			set wireless.$dev.txpower='26'
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.noscan='1'
 			set wireless.$dev.ldpc='1'
 			set wireless.$dev.short_gi_80='1'
-			set wireless.$dev.short_gi_40='1'
-			set wireless.$dev.tx_stbc='1'
-			set wireless.$dev.rx_stbc='3'
-			set wireless.$dev.su_beamformer='1'
-			set wireless.$dev.su_beamformee='1'
-			set wireless.$dev.mu_beamformer='1'
-			set wireless.$dev.beamformer_antennas='4'
-			set wireless.$dev.beamformee_antennas='4'
-			set wireless.$dev.vht_max_mpdu='11454'
-			set wireless.$dev.vht_max_a_mpdu_len_exp='7'
-			set wireless.$dev.airtime_mode='1'
+			set wireless.$dev.tx_stbc='0'
+			set wireless.$dev.rx_stbc='0'
+			del wireless.$dev.vht_max_mpdu
+			del wireless.$dev.vht_max_a_mpdu_len_exp
+			del wireless.$dev.su_beamformer
+			del wireless.$dev.su_beamformee
+			del wireless.$dev.mu_beamformer
+			del wireless.$dev.beamformer_antennas
+			del wireless.$dev.beamformee_antennas
+			del wireless.$dev.airtime_mode
 			del wireless.$dev.tx_queue_data0_aifs
 			del wireless.$dev.tx_queue_data0_cwmin
 			del wireless.$dev.tx_queue_data0_cwmax
@@ -206,16 +204,16 @@ for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' |
 		uci -q batch <<-EOF
 			set wireless.$dev.channel='6'
 			set wireless.$dev.htmode='HT40'
-			set wireless.$dev.country='BD'
+			set wireless.$dev.country='US'
 			set wireless.$dev.txpower='23'
 			set wireless.$dev.cell_density='0'
 			set wireless.$dev.noscan='1'
 			set wireless.$dev.vendor_vht='1'
 			set wireless.$dev.ldpc='1'
 			set wireless.$dev.short_gi_40='1'
-			set wireless.$dev.tx_stbc='1'
-			set wireless.$dev.rx_stbc='1'
-			set wireless.$dev.airtime_mode='1'
+			set wireless.$dev.tx_stbc='0'
+			set wireless.$dev.rx_stbc='0'
+			del wireless.$dev.airtime_mode
 			del wireless.$dev.tx_queue_data0_aifs
 			del wireless.$dev.tx_queue_data0_cwmin
 			del wireless.$dev.tx_queue_data0_cwmax
@@ -232,9 +230,10 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 	if [ "$band" = "5g" ]; then
 		uci -q batch <<-EOF
 			set wireless.$iface.ssid='NexRouter_5G'
-			set wireless.$iface.encryption='psk2+ccmp'
+			set wireless.$iface.encryption='sae'
 			set wireless.$iface.key='12345678'
-			set wireless.$iface.ieee80211w='0'
+			set wireless.$iface.ieee80211w='2'
+			set wireless.$iface.sae_pwe='2'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -243,24 +242,19 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.dtim_period='1'
 			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='2347'
-			set wireless.$iface.ieee80211r='1'
-			set wireless.$iface.mobility_domain='4f57'
-			set wireless.$iface.ft_over_ds='0'
-			set wireless.$iface.ft_psk_generate_local='1'
+			set wireless.$iface.ieee80211r='0'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
-			set wireless.$iface.time_advertisement='2'
-			set wireless.$iface.rrm_neighbor_report='1'
-			set wireless.$iface.rrm_beacon_report='1'
-			set wireless.$iface.disassoc_low_ack='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
 			set wireless.$iface.ssid='NexRouter_2.4G'
-			set wireless.$iface.encryption='psk2+ccmp'
+			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
-			set wireless.$iface.ieee80211w='0'
+			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.sae_pwe='2'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -269,17 +263,11 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.dtim_period='1'
 			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='2347'
-			set wireless.$iface.ieee80211r='1'
-			set wireless.$iface.mobility_domain='4f57'
-			set wireless.$iface.ft_over_ds='0'
-			set wireless.$iface.ft_psk_generate_local='1'
+			set wireless.$iface.ieee80211r='0'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
-			set wireless.$iface.time_advertisement='2'
-			set wireless.$iface.rrm_neighbor_report='1'
-			set wireless.$iface.rrm_beacon_report='1'
-			set wireless.$iface.disassoc_low_ack='1'
+			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	fi
 done
@@ -292,5 +280,5 @@ done
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null || true
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
-echo "nexrouter: v3.7 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
+echo "nexrouter: v3.8 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
 exit 0

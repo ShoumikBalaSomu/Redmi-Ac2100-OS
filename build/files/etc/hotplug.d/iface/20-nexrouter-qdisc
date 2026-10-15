@@ -1,9 +1,14 @@
 #!/bin/sh
 # ===========================================================================
-# 20-nexrouter-qdisc (v3.5) — High-Throughput Gigabit fq_codel on WAN Egress
+# 20-nexrouter-qdisc (v3.8) — Zero-Bottleneck WAN Fastpath (No Default Shaper)
 # ===========================================================================
-# Uses quantum 3028 (2x MTU super-quantum) and 8 MiB buffer ceiling on WAN
-# egress ONLY so Wireless Download (WAN -> WLAN) is never throttled.
+# Per docs/03-performance-reality.md §3 & §6:
+#   - CAKE caps MT7621 at ~150 Mbps.
+#   - Software fq_codel on WAN caps MT7621 non-WED Wi-Fi Download at ~200-300 Mbps
+#     (which caused the 294 Mbps Download ceiling!).
+# Therefore, by default we remove any software root shaper on WAN (`noqueue` /
+# hardware ring fastpath) unless `nexrouter.core.sqm_enabled='1'` is explicitly
+# enabled by the user for low-speed (<200 Mbps) DSL/cable lines.
 # ===========================================================================
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
@@ -12,11 +17,13 @@ dev="$(uci -q get network.wan.device 2>/dev/null)"
 [ -n "$dev" ] || dev="$(uci -q get network.wan.ifname 2>/dev/null)"
 [ -n "$dev" ] || exit 0
 
-current_qdisc="$(tc qdisc show dev "$dev" 2>/dev/null | head -n1)"
-case "$current_qdisc" in
-	*cake*) exit 0 ;;
-esac
-
-tc qdisc replace dev "$dev" root fq_codel 	limit 8192 flows 1024 quantum 3028 target 5ms interval 100ms 	memory_limit 8Mb ecn 2>/dev/null
-
 ip link set "$dev" txqueuelen 2000 2>/dev/null || true
+
+sqm_en="$(uci -q get nexrouter.core.sqm_enabled 2>/dev/null || echo 0)"
+if [ "$sqm_en" = "1" ]; then
+	tc qdisc replace dev "$dev" root fq_codel 		limit 10240 flows 1024 quantum 3028 target 5ms interval 100ms 		memory_limit 16Mb ecn 2>/dev/null || true
+else
+	# Remove any software root qdisc on WAN so 1 Gbps ISP -> 5 GHz Wi-Fi is never throttled at 294 Mbps!
+	tc qdisc del dev "$dev" root 2>/dev/null || true
+fi
+exit 0

@@ -1,29 +1,22 @@
 #!/bin/sh /etc/rc.common
 # ===========================================================================
-# nexrouter-core (v3.7) — 2-Core Pipeline Split & nf_flowtable Fastpath Engine
+# nexrouter-core (v3.8) — Proven 4-VPE SMP, No-Qdisc WAN & Zero-Drop LAN
 # ===========================================================================
-# Fixes the 70.7 Mbps / 83 ms ping regression on Xiaomi Redmi Router AC2100:
+# Combines the empirically verified 584-893 Mbps 4-VPE SMP layout from docs/09
+# with Zero-Drop Laptop LAN healing and 64 MiB ZRAM:
 #
-#   1. Preserves `nf_flowtable` Fastpath (`gro off gso off tso off` on WAN/Eth):
-#      In Linux `net/netfilter/nf_flow_table_ip.c`, `nf_flow_offload_ip_hook()`
-#      executes `if (skb_is_gso(skb)) return NF_ACCEPT;`. Enabling GRO/GSO/TSO
-#      coalesces packets into GSO super-SKBs that get KICKED OUT of OpenWrt's
-#      `nf_flowtable` fastpath! Disabling GRO/GSO/TSO on `eth0`/`wan`/`br-lan`
-#      ensures 100% of Download packets stay in the `nf_flowtable` fastpath.
-#   2. True 2-Core Pipeline Split (Core 0 = WAN Ingress, Core 1 = 5 GHz Wi-Fi):
-#      On MT7621AT, VPE0+VPE1 share Physical Core 0 (880 MHz) and VPE2+VPE3
-#      share Physical Core 1 (880 MHz). Putting `eth0` RPS on Core 1 (`0xc`)
-#      starved MT7615N on Core 1. Now:
-#        - VPE0 (0x1, Core 0): MT7621 GMAC Frame Engine Hard IRQ
-#        - VPE1 (0x2, Core 0): `eth0` / `wan` RX RPS (`nf_flowtable` lookup)
-#        - VPE2 (0x4, Core 1): MT7615N 5 GHz PCIe0 Hard IRQ & TX completion
-#        - VPE3 (0x8, Core 1): 5 GHz / 2.4 GHz Wi-Fi RPS & Threaded NAPI poll
-#   3. Zero-Bloat 64-MPDU AQL Window (`5000` us low / `10000` us high):
-#      A full 64-subframe VHT80 A-MPDU at 866 Mbps takes 4.2 ms (4,200 us).
-#      Setting `5000 / 10000` us (with `aql_threshold=24000`) packs full 64-MPDU
-#      Download bursts while keeping loaded ping <15 ms (eliminating the 83 ms
-#      bufferbloat that triggered TCP congestion backoff).
-#   4. Zero-Drop MT7530 LAN Switch Healer (`802.3az` EEE off, `neigh_suppress=0`).
+#   1. Proven 4-VPE IRQ & RPS Partitioning (`docs/09-mu-mimo-technical-truth.md`):
+#      - Hard IRQs: Wired GMAC -> CPU0 (`0x1`), 2.4G MT7603 -> CPU1 (`0x2`),
+#        5G MT7615N -> CPU2+CPU3 (`0xc`, both VPEs of Physical Core 1!).
+#      - RPS SoftIRQs: Wired (`eth0`/`wan`/`pppoe-wan`) -> `0x3` (Core 0 VPE0/1),
+#        Wi-Fi (`phy0-ap0`/`phy1-ap0`) -> `0xe` (VPE1+VPE2+VPE3),
+#        Virtual DSA slaves (`lan1..3`, `br-lan`) -> `0x0` (no triple-bounce).
+#   2. Standard Linux GRO + GSO + SG Enabled (`gro on gso on sg on`):
+#      Restores hardware scatter-gather & GRO batching across all netdevs.
+#   3. Removes Software `fq_codel` Shaper on WAN (unless `sqm_enabled=1`):
+#      Eliminates the ~200-300 Mbps (`294 Mbps`) software qdisc ceiling on
+#      1 Gbps ISP connections (`docs/03-performance-reality.md` §3).
+#   4. Sweet-Spot 5000/10000 us AQL Window + RTS=2347 + Zero-Drop MT7530 LAN.
 # ===========================================================================
 
 START=98
@@ -67,7 +60,7 @@ set_irq_mask() {
 	done
 }
 
-# 2. True 2-Core Pipeline IRQ Split (Core 0 = Wired GMAC, Core 1 = 5 GHz Radio)
+# 2. Proven 4-VPE IRQ Partitioning (Eth->1, 2.4G->2, 5G->c [CPU2+CPU3])
 configure_irqs() {
 	local irq_eth="" irq_2g="" irq_5g="" irq_pcie=""
 	local line num name
@@ -90,13 +83,11 @@ configure_irqs() {
 	done < /proc/interrupts
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		# Core 0: VPE0 (0x1) = GMAC Frame Engine, VPE1 (0x2) = WAN RX RPS
-		# Core 1: VPE2 (0x4) = MT7615N 5 GHz PCIe0, VPE3 (0x8) = MT7603 2.4G & Wi-Fi RPS
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
-		[ -n "$irq_2g" ]   && set_irq_mask 8 $irq_2g
-		[ -n "$irq_5g" ]   && set_irq_mask 4 $irq_5g
-		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask 4 $irq_pcie
-		log "IRQ Pipeline Split: Eth($irq_eth)->VPE0(Core0), 5G($irq_5g $irq_pcie)->VPE2(Core1), 2.4G($irq_2g)->VPE3"
+		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
+		[ -n "$irq_5g" ]   && set_irq_mask c $irq_5g
+		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask c $irq_pcie
+		log "IRQ affinity (4-VPE): Eth($irq_eth)->CPU0(1), 2.4G($irq_2g)->CPU1(2), 5G($irq_5g $irq_pcie)->CPU2/3(c)"
 	else
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
 		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
@@ -105,23 +96,21 @@ configure_irqs() {
 	fi
 }
 
-# 3. 2-Core RPS Split + Disable GRO/GSO/TSO so 100% of Packets Hit `nf_flowtable`
+# 3. 4-VPE RPS/XPS + GRO/GSO Restore + Zero-Drop MT7530 LAN Switch Healer
 configure_napi_rps_and_lan_switch() {
-	local threaded_en netdev d rps_mask_wired rps_mask_wifi bp
+	local threaded_en netdev d rps_mask_wired rps_mask_wifi bp sqm_en wan_dev
 	threaded_en="$(uci -q get nexrouter.core.threaded_napi 2>/dev/null || echo 1)"
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		# Core 0 VPE1 (0x2) handles eth0/wan RX softirq & nf_flowtable lookup
-		# Core 1 VPE3 (0x8) handles Wi-Fi RX softirq & Threaded NAPI
-		rps_mask_wired="2"
-		rps_mask_wifi="8"
+		rps_mask_wired="3"
+		rps_mask_wifi="e"
 	else
-		rps_mask_wired="1"
-		rps_mask_wifi="2"
+		rps_mask_wired="3"
+		rps_mask_wifi="3"
 	fi
 
-	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '16384' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '4096' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
+	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '10000' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
 	[ -w /proc/sys/net/core/netdev_budget ] && 		printf '600' > /proc/sys/net/core/netdev_budget 2>/dev/null
 
 	for netdev in /sys/class/net/*; do
@@ -130,10 +119,10 @@ configure_napi_rps_and_lan_switch() {
 
 		if [ -w "$netdev/threaded" ]; then
 			case "$d" in
-				eth*|wan|lan*|br-lan)
-					printf '0' > "$netdev/threaded" 2>/dev/null || true ;;
 				phy*-ap*|wlan*|ra*|rai*)
 					[ "$threaded_en" = "1" ] && printf '1' > "$netdev/threaded" 2>/dev/null || true ;;
+				eth*|wan|lan*|br-lan)
+					printf '0' > "$netdev/threaded" 2>/dev/null || true ;;
 			esac
 		fi
 
@@ -151,26 +140,23 @@ configure_napi_rps_and_lan_switch() {
 			esac
 		fi
 
-		if [ -w "$netdev/queues/tx-0/xps_cpus" ]; then
-			case "$d" in
-				phy*-ap*|wlan*|rai*)
-					printf '4' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
-				*)
-					printf '0' > "$netdev/queues/tx-0/xps_cpus" 2>/dev/null || true ;;
-			esac
-		fi
-
 		if command -v ethtool >/dev/null 2>&1; then
-			# CRITICAL: Disable GRO/GSO/TSO so `skb_is_gso(skb)` is FALSE and
-			# 100% of TCP Download packets enter `nf_flow_offload_ip_hook`!
-			ethtool -K "$d" gro off gso off tso off 2>/dev/null || true
+			ethtool -K "$d" gro on gso on sg on 2>/dev/null || true
 			case "$d" in
 				lan1|lan2|lan3|wan)
 					ethtool --set-eee "$d" eee off 2>/dev/null || true ;;
 			esac
 		fi
-		ip link set "$d" txqueuelen 1000 2>/dev/null || true
+		ip link set "$d" txqueuelen 2000 2>/dev/null || true
 	done
+
+	# Remove WAN root fq_codel shaper unless sqm_enabled=1 so WAN->Wi-Fi Download isn't capped at ~294 Mbps
+	sqm_en="$(uci -q get nexrouter.core.sqm_enabled 2>/dev/null || echo 0)"
+	if [ "$sqm_en" != "1" ]; then
+		for wan_dev in wan pppoe-wan eth0; do
+			tc qdisc del dev "$wan_dev" root 2>/dev/null || true
+		done
+	fi
 
 	if [ -d /sys/class/net/br-lan/bridge ]; then
 		printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
@@ -184,7 +170,7 @@ configure_napi_rps_and_lan_switch() {
 		[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
 	done
 
-	log "2-Core Pipeline (Core0=WAN, Core1=5G) + nf_flowtable non-GSO fastpath active"
+	log "4-VPE SMP (Wired RPS=3, Wi-Fi RPS=e, 5G IRQ=c) + No-Qdisc WAN fastpath active"
 }
 
 # 4. Sweet-Spot 64-MPDU AQL Window (5000/10000 us, threshold 24000 us) + RTS=2347
@@ -252,7 +238,7 @@ verify_offload() {
 }
 
 start() {
-	log "Applying NexRouter v3.7 2-Core Pipeline & nf_flowtable Fastpath (VPEs=$VPE_COUNT)"
+	log "Applying NexRouter v3.8 4-VPE SMP & No-Qdisc WAN Fastpath (VPEs=$VPE_COUNT)"
 	configure_zram_virtual_ram
 	configure_irqs
 	configure_napi_rps_and_lan_switch

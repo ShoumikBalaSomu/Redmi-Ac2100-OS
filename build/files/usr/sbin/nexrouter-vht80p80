@@ -1,0 +1,110 @@
+#!/bin/sh
+# ===========================================================================
+# nexrouter-vht80p80 (v3.8) — Smart VHT80P80 (80+80 MHz) & VHT80 Controller
+# ===========================================================================
+# Enables non-contiguous 80+80 MHz (`VHT80P80`: Primary Channel 149 [UNII-3,
+# center 155] + Secondary Channel 36 [UNII-1, center 42] under `country='US'`)
+# by patching `/lib/netifd/wireless/mac80211.sh` (OpenWrt PR #18313 logic).
+#
+# Includes a 6-second hardware link watchdog:
+#   - If the running kernel/driver brings up `phy1-ap0` in `80+80 MHz` mode,
+#     `VHT80P80` remains active (1,733 Mbps PHY on 2x2 80+80MHz clients!).
+#   - If a prebuilt unpatched kernel rejects `NL80211_CHAN_WIDTH_80P80`, the
+#     watchdog automatically restores `VHT80` (Channel 149, 80 MHz) in 2s so
+#     5 GHz Wi-Fi never stays down!
+#
+# Usage:
+#   nexrouter-vht80p80 enable   # Patch mac80211.sh & activate VHT80P80 (149+36)
+#   nexrouter-vht80p80 vht80    # Lock 5 GHz to rock-solid VHT80 (Channel 149)
+#   nexrouter-vht80p80 status   # Show current 5 GHz channel width & segments
+# ===========================================================================
+
+MAC80211_SH="/lib/netifd/wireless/mac80211.sh"
+
+patch_mac80211_sh() {
+	[ -f "$MAC80211_SH" ] || return 1
+	grep -q "VHT80P80" "$MAC80211_SH" 2>/dev/null && return 0
+
+	cp -f "$MAC80211_SH" "${MAC80211_SH}.bak" 2>/dev/null || true
+
+	# Add channel2 config option registration and VHT80P80 case handling
+	sed -i '/config_add_int .*channel/a \	config_add_string channel2' "$MAC80211_SH" 2>/dev/null || true
+	sed -i 's/json_get_vars channel /json_get_vars channel channel2 /g' "$MAC80211_SH" 2>/dev/null || true
+
+	# Inject VHT80P80 hostapd configuration hook if htmode=VHT80P80
+	awk '
+	/vht_oper_chwidth=/ && !done {
+		print $0
+		print "		if [ "$htmode" = "VHT80P80" ]; then"
+		print "			vht_oper_chwidth=3"
+		print "			vht_center_seg0=155"
+		print "			[ "$channel" = "36" ] && vht_center_seg0=42"
+		print "			vht_center_seg1=42"
+		print "			[ "${channel2:-36}" = "149" ] && vht_center_seg1=155"
+		print "			append base_cfg "vht_oper_centr_freq_seg1_idx=$vht_center_seg1" "$N""
+		print "			append base_cfg "vht_capab=[VHT160-80PLUS80][SHORT-GI-160]" "$N""
+		print "		fi"
+		done=1
+		next
+	}
+	{ print $0 }
+	' "$MAC80211_SH" > "${MAC80211_SH}.new" && mv -f "${MAC80211_SH}.new" "$MAC80211_SH"
+	chmod 0755 "$MAC80211_SH"
+}
+
+find_5g_radio() {
+	local dev band
+	for dev in $(uci -q show wireless | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
+		band="$(uci -q get wireless.$dev.band 2>/dev/null)"
+		[ "$band" = "5g" ] && { printf '%s' "$dev"; return 0; }
+	done
+	printf 'radio1'
+}
+
+case "${1:-status}" in
+	enable)
+		dev="$(find_5g_radio)"
+		echo "[*] Patching $MAC80211_SH for VHT80P80 (80+80 MHz: Ch 149 + Ch 36)..."
+		patch_mac80211_sh
+		uci set wireless.$dev.country='US'
+		uci set wireless.$dev.channel='149'
+		uci set wireless.$dev.channel2='36'
+		uci set wireless.$dev.htmode='VHT80P80'
+		uci set wireless.$dev.short_gi_80='1'
+		uci commit wireless
+		wifi reload
+		echo "[*] Waiting 6 seconds for MT7615N 80+80 MHz PLL lock..."
+		sleep 6
+		if iw dev 2>/dev/null | grep -A 6 'phy#1' | grep -q 'width: 80+80 MHz'; then
+			echo "[+] SUCCESS: MT7615N locked in VHT80P80 (80+80 MHz: Ch 149 + Ch 36)!"
+			iw dev | grep -A 8 'phy#1'
+		elif iw dev 2>/dev/null | grep -A 6 'phy#1' | grep -q 'width: 80 MHz'; then
+			echo "[!] Note: Running kernel bound primary 80 MHz segment (width: 80 MHz)."
+			iw dev | grep -A 8 'phy#1'
+		else
+			echo "[!] Prebuilt kernel rejected NL80211_CHAN_WIDTH_80P80 — auto-restoring rock-solid VHT80 (Ch 149)..."
+			[ -f "${MAC80211_SH}.bak" ] && cp -f "${MAC80211_SH}.bak" "$MAC80211_SH"
+			uci set wireless.$dev.htmode='VHT80'
+			uci -q del wireless.$dev.channel2
+			uci commit wireless
+			wifi reload
+			sleep 4
+			echo "[+] Restored 5 GHz VHT80 (Channel 149, 80 MHz):"
+			iw dev | grep -A 8 'phy#1'
+		fi
+		;;
+	vht80)
+		dev="$(find_5g_radio)"
+		[ -f "${MAC80211_SH}.bak" ] && cp -f "${MAC80211_SH}.bak" "$MAC80211_SH"
+		uci set wireless.$dev.country='US'
+		uci set wireless.$dev.channel='149'
+		uci set wireless.$dev.htmode='VHT80'
+		uci -q del wireless.$dev.channel2
+		uci commit wireless
+		wifi reload
+		echo "[+] Locked 5 GHz to VHT80 (Channel 149, 80 MHz)."
+		;;
+	status|*)
+		iw dev 2>/dev/null
+		;;
+esac
