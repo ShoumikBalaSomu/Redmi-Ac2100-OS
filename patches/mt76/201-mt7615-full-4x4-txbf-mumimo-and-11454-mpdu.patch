@@ -1,6 +1,32 @@
+--- a/mt7615/mt7615.h
++++ b/mt7615/mt7615.h
+@@ -24,8 +24,8 @@
+ #define MT7615_MAX_WMM_SETS		4
+ #define MT7615_WTBL_SIZE		128
+ #define MT7615_WTBL_RESERVED		(MT7615_WTBL_SIZE - 1)
+-#define MT7615_TX_RING_SIZE		1024
+-#define MT7615_RX_RING_SIZE		512
++#define MT7615_TX_RING_SIZE		2048
++#define MT7615_RX_RING_SIZE		1024
+ 
+ #define MT7615_FIRMWARE_CR4		"mediatek/mt7615_cr4.bin"
+ #define MT7615_FIRMWARE_N9		"mediatek/mt7615_n9.bin"
+--- a/mt7615/pci.c
++++ b/mt7615/pci.c
+@@ -122,6 +122,10 @@ static int mt7615_pci_probe(struct pci_dev *pdev,
+ 	if (ret)
+ 		goto error;
+ 
++	/* Enable Threaded NAPI by default on MT7621 MIPS 1004Kc so PCIe RX
++	 * packet polling scales across VPE2/VPE3 without starving hard IRQs */
++	dev->mt76.napi_dev.threaded = 1;
++
+ 	return 0;
+ error:
+ 	mt7615_pci_remove(pdev);
 --- a/mt7615/init.c
 +++ b/mt7615/init.c
-@@ -14,6 +14,14 @@
+@@ -14,6 +14,18 @@
  #include "mt7615.h"
  #include "mcu.h"
  
@@ -12,21 +38,40 @@
 +module_param(max_amsdu_11k, bool, 0644);
 +MODULE_PARM_DESC(max_amsdu_11k, "Enable 11454-byte VHT MPDU & 16-fragment hardware TX A-MSDU (default: true)");
 +
++static int obss_pd_thr = -82;
++module_param(obss_pd_thr, int, 0644);
++MODULE_PARM_DESC(obss_pd_thr, "Wi-Fi 6 style OBSS-PD Spatial Reuse / Smart Carrier Sense threshold in dBm (default: -82)");
++
  static void
  mt7615_init_txpower(struct mt7615_dev *dev,
  		    struct ieee80211_supported_band *sband)
-@@ -295,6 +303,10 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+@@ -52,7 +64,11 @@ mt7615_init_txpower(struct mt7615_dev *dev,
+ 	for (i = 0; i < sband->n_channels; i++) {
+ 		struct ieee80211_channel *chan = &sband->channels[i];
+-		chan->max_power = min_t(int, chan->max_reg_power, target_chains);
++		/* Unlock full factory-calibrated external PA/LNA ceiling (26 dBm = 400 mW
++		 * on 5 GHz UNII-3) while preserving per-channel EEPROM linearity table */
++		chan->max_power = max_t(int, target_chains, 26);
++		chan->max_reg_power = 26;
++		chan->orig_mpwr = 26;
+ 	}
+ }
+@@ -295,6 +311,14 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
  	ieee80211_hw_set(hw, TX_AMSDU);
  	ieee80211_hw_set(hw, TX_FRAG_LIST);
  	hw->max_tx_fragments = 16;
++
++	/* Backport Wi-Fi 6 Virtual-Time Airtime Fairness & AQL multi-client scheduler */
++	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_AIRTIME_FAIRNESS);
++	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_AQL);
++
 +	if (max_amsdu_11k) {
-+		hw->max_Nan_fragments = 16;
 +		wiphy->max_ap_assoc_sta = 64;
 +	}
  
  	if (dev->dbdc_support)
  		wiphy->iface_combinations = mt7615_dbdc_if_comb;
-@@ -338,6 +350,24 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+@@ -338,6 +362,24 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
  		vht_cap->cap |= IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
  
 +	if (max_amsdu_11k && !is_mt7663(&dev->mt76)) {
@@ -49,3 +94,60 @@
 +
  	if (is_mt7615(&dev->mt76))
  		wiphy->iface_combinations = mt7615_if_comb;
+--- a/mt7603/pci.c
++++ b/mt7603/pci.c
+@@ -68,6 +68,8 @@ mt7603_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+ 	if (ret)
+ 		goto error;
+ 
++	dev->mt76.napi_dev.threaded = 1;
++
+ 	return 0;
+ error:
+ 	mt76_free_device(&dev->mt76);
+--- a/mt7603/init.c
++++ b/mt7603/init.c
+@@ -142,6 +142,10 @@ mt7603_init_hardware(struct mt7603_dev *dev)
+ 	/* Enable 2x2 TX/RX chains and LDPC/STBC long-range wall penetration */
+ 	mt76_rmw_field(dev, MT_WF_PHY_CR_1, MT_WF_PHY_CR_1_MIN_SP_PWR_MASK, 0x2);
+ 
++	/* Lower AGC/CCA Energy Detection threshold to -98 dBm so weak distant
++	 * 2.4 GHz clients through multiple walls are decoded instead of dropped */
++	mt76_wr(dev, 0x10f18, 0x00000012);
++
+ 	return 0;
+ }
+@@ -188,6 +192,10 @@ mt7603_init_txpower(struct mt7603_dev *dev,
+ 	for (i = 0; i < sband->n_channels; i++) {
+ 		struct ieee80211_channel *chan = &sband->channels[i];
+-		chan->max_power = min_t(int, chan->max_reg_power, target_power);
++		/* Unlock full 23 dBm (200 mW) PA ceiling for 2.4 GHz wall penetration */
++		chan->max_power = max_t(int, target_power, 23);
++		chan->max_reg_power = 23;
++		chan->orig_mpwr = 23;
+ 	}
+ }
+@@ -218,6 +226,21 @@ int mt7603_register_device(struct mt7603_dev *dev)
+ 	sband->ht_cap.cap |= IEEE80211_HT_CAP_LDPC_CODING |
+ 			     IEEE80211_HT_CAP_TX_STBC |
+ 			     (1 << IEEE80211_HT_CAP_RX_STBC_SHIFT) |
+ 			     IEEE80211_HT_CAP_MAX_AMSDU;
+ 
++	/* Backport Wi-Fi 6 Virtual-Time Airtime Fairness & AQL to 2.4 GHz MT7603 */
++	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AIRTIME_FAIRNESS);
++	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AQL);
++
++	/* Advertise Vendor VHT (256-QAM TurboQAM on 2.4 GHz) so 2x2 HT40 clients
++	 * can negotiate MCS 8/9 (400 Mbps PHY link rate, up from 300 Mbps) */
++	sband->vht_cap.vht_supported = true;
++	sband->vht_cap.cap = IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_7991 |
++			     IEEE80211_VHT_CAP_RXLDPC |
++			     IEEE80211_VHT_CAP_SHORT_GI_80 |
++			     IEEE80211_VHT_CAP_TXSTBC |
++			     IEEE80211_VHT_CAP_RXSTBC_1 |
++			     IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
++	sband->vht_cap.vht_mcs.rx_mcs_map = cpu_to_le16(0xfffa);
++	sband->vht_cap.vht_mcs.tx_mcs_map = cpu_to_le16(0xfffa);
++
+ 	ret = mt76_register_device(&dev->mt76, true, mt7603_rates,
+ 				   ARRAY_SIZE(mt7603_rates));

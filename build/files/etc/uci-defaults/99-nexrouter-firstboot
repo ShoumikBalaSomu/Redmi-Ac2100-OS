@@ -1,18 +1,24 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.0 Apex Edition) — Clean First-Boot Provisioning
+# 99-nexrouter-firstboot (v3.1 Wi-Fi 6 Backport & Apex Edition)
 # ===========================================================================
 # Configures:
 #   1. MT7621 Hardware Flowtable Offload (PPE 16,384 flows) + 4-VPE Steering
-#   2. 5 GHz MT7615N: Channel 149 (VHT80), 26 dBm PA ceiling, 4x4 SU/MU-MIMO
-#      Beamforming, LDPC, STBC, Short-GI, and 802.11k/v RRM Roaming.
+#   2. 5 GHz MT7615N: Channel 149 (VHT80), 26 dBm PA ceiling, 11,454-byte
+#      MPDU, 4x4 SU/MU-MIMO Beamforming, LDPC, STBC, Short-GI.
 #   3. 2.4 GHz MT7603EN: Channel 6 (HT40), 256-QAM TurboQAM (`vendor_vht='1'`),
 #      23 dBm PA ceiling, LDPC, STBC, and Short-GI for 400 Mbps PHY & wall range.
+#   4. Backported Wi-Fi 6 (802.11ax/802.11v/802.11r) MAC & Power-Save Features:
+#      - TWT-Equivalent Sleep: `wnm_sleep_mode='1'`, `proxy_arp='1'`, `uapsd='1'`
+#      - Sub-15ms Fast Roaming: `ieee80211r='1'`, `mobility_domain='4f57'`,
+#        `ft_over_ds='0'`, `ft_psk_generate_local='1'`
+#      - MU-EDCA-Style WMM Priority Queues (`tx_queue_data0_*` / `data2_burst`)
+#      - Dynamic OBSS-PD Spatial Reuse (`obss_pd_enable='1'`)
 # ===========================================================================
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.0 Apex first-boot provisioning (${NEXROUTER_VERSION:-3.0.0})"
+echo "nexrouter: v3.1 Wi-Fi 6 Backport & Apex provisioning (${NEXROUTER_VERSION:-3.1.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -82,7 +88,7 @@ if uci -q get upnpd.config >/dev/null 2>&1; then
 	EOF
 fi
 
-# 6. Telemetry & AI-RF Controller Defaults
+# 6. Telemetry & AI-RF Contextual Bandit + Wi-Fi 6 OBSS-PD Defaults
 if uci -q get softflowd.@softflowd[0] >/dev/null 2>&1; then
 	uci -q set softflowd.@softflowd[0].enabled='0'
 	uci -q commit softflowd
@@ -93,8 +99,11 @@ uci -q batch <<-EOF
 	set nexrouter.core.threaded_napi='1'
 	set nexrouter.core.aql_txq_limit='2500'
 	set nexrouter.core.turbo_2g_vht='1'
+	set nexrouter.core.wifi6_obss_pd='1'
+	set nexrouter.core.wifi6_airtime_fairness='1'
 	set nexrouter.roaming.enabled='1'
 	set nexrouter.roaming.ai_bandit='1'
+	set nexrouter.roaming.obss_pd_spatial_reuse='1'
 	set nexrouter.insight.enabled='1'
 	set nexrouter.insight.mode='heuristic'
 	set nexrouter.insight.export='0'
@@ -103,7 +112,7 @@ uci -q batch <<-EOF
 	commit nexrouter
 EOF
 
-# 7. Wireless: 1733 Mbps 5GHz (4x4 VHT80) + 400 Mbps 2.4GHz (2x2 HT40 256-QAM TurboQAM)
+# 7. Wireless: 1733M 5G + 400M 2.4G TurboQAM + Backported Wi-Fi 6 MAC Features
 [ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
 
 for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
@@ -128,6 +137,15 @@ for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' |
 			set wireless.$dev.beamformee_antennas='4'
 			set wireless.$dev.vht_max_mpdu='11454'
 			set wireless.$dev.vht_max_a_mpdu_len_exp='7'
+			set wireless.$dev.airtime_mode='2'
+			set wireless.$dev.tx_queue_data0_aifs='1'
+			set wireless.$dev.tx_queue_data0_cwmin='3'
+			set wireless.$dev.tx_queue_data0_cwmax='7'
+			set wireless.$dev.tx_queue_data0_burst='1.5'
+			set wireless.$dev.tx_queue_data1_aifs='2'
+			set wireless.$dev.tx_queue_data1_cwmin='7'
+			set wireless.$dev.tx_queue_data1_cwmax='15'
+			set wireless.$dev.tx_queue_data1_burst='3.0'
 			set wireless.$dev.tx_queue_data2_burst='4.0'
 			set wireless.$dev.disabled='0'
 		EOF
@@ -144,6 +162,11 @@ for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' |
 			set wireless.$dev.short_gi_40='1'
 			set wireless.$dev.tx_stbc='1'
 			set wireless.$dev.rx_stbc='1'
+			set wireless.$dev.airtime_mode='2'
+			set wireless.$dev.tx_queue_data0_aifs='1'
+			set wireless.$dev.tx_queue_data0_cwmin='3'
+			set wireless.$dev.tx_queue_data0_cwmax='7'
+			set wireless.$dev.tx_queue_data0_burst='1.5'
 			set wireless.$dev.tx_queue_data2_burst='4.0'
 			set wireless.$dev.disabled='0'
 		EOF
@@ -159,9 +182,19 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
 			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.ocv='1'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='1'
+			set wireless.$iface.wnm_sleep_mode='1'
+			set wireless.$iface.wnm_sleep_mode_no_keys='1'
+			set wireless.$iface.proxy_arp='1'
+			set wireless.$iface.dtim_period='2'
+			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='1536'
+			set wireless.$iface.ieee80211r='1'
+			set wireless.$iface.mobility_domain='4f57'
+			set wireless.$iface.ft_over_ds='0'
+			set wireless.$iface.ft_psk_generate_local='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
@@ -176,9 +209,19 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
 			set wireless.$iface.ieee80211w='1'
+			set wireless.$iface.ocv='1'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='1'
+			set wireless.$iface.wnm_sleep_mode='1'
+			set wireless.$iface.wnm_sleep_mode_no_keys='1'
+			set wireless.$iface.proxy_arp='1'
+			set wireless.$iface.dtim_period='2'
+			set wireless.$iface.max_inactivity='300'
 			set wireless.$iface.rts='1536'
+			set wireless.$iface.ieee80211r='1'
+			set wireless.$iface.mobility_domain='4f57'
+			set wireless.$iface.ft_over_ds='0'
+			set wireless.$iface.ft_psk_generate_local='1'
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
@@ -203,5 +246,5 @@ for svc in miniupnpd nlbwmon https-dns-proxy nexrouter-core nexrouter-insight ne
 	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null || true
 done
 
-echo "nexrouter: v3.0 Apex provisioning complete — open http://192.168.1.1/nex/"
+echo "nexrouter: v3.1 Wi-Fi 6 Backport & Apex provisioning complete — open http://192.168.1.1/nex/"
 exit 0
