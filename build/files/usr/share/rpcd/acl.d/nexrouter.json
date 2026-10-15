@@ -63,6 +63,7 @@
 					"farlink",
 					"doh_get",
 					"hardware_chips",
+					"auth_status",
 					"overclock",
 					"recovery",
 					"export_get",
@@ -93,6 +94,7 @@
 					"set_offload",
 					"export_set",
 					"doh_set",
+					"set_password",
 					"insight_config_set"
 				]
 			}

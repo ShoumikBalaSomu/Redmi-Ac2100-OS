@@ -1021,14 +1021,93 @@ export function panelSettings(api, ctx) {
   mount(root, view);
 
   async function refresh() {
-    const [exp, cfg, doh] = await Promise.all([
+    const [exp, cfg, doh, auth] = await Promise.all([
       safe(() => api.exportGet()),
       safe(() => api.insightConfig()),
       safe(() => api.dohGet()),
+      safe(() => api.authStatus()),
     ]);
 
     const canWrite = api.canWrite;
     const nodes = [];
+
+    // ── Router Admin Password & Optional /nex/ Portal Lock ─────────────────
+    const authState = auth && !auth.__error && !auth.__missing ? auth : { password_set: false, require_login: false };
+    nodes.push(card({
+      title: 'Router Admin Password & Portal Security (/nex/ + LuCI Argon + SSH)',
+      variant: authState.password_set ? 'ok' : 'info',
+      note: 'By default, /nex/ opens without a password. You can set a root password here anytime — it secures /nex/, LuCI Argon (/cgi-bin/luci/), and SSH simultaneously, or you can clear it back to passwordless mode.',
+      body: h('div', { class: 'stack' },
+        h('div', { class: 'metrics' },
+          metric({
+            label: 'Portal Access Mode',
+            value: authState.require_login && authState.password_set ? 'LOCKED' : 'PASSWORDLESS',
+            sub: authState.password_set ? 'Password set in /etc/shadow' : 'No password set (default)',
+            variant: authState.password_set ? 'ok' : 'info',
+          }),
+          metric({ label: 'Admin Account', value: authState.username ?? 'root', sub: 'Shared with LuCI Argon & SSH' })),
+        h('label', { class: 'field' },
+          h('span', { class: 'field__label' }, 'New Admin Password (root)'),
+          h('input', {
+            class: 'input', id: 'admin-new-pass', type: 'password',
+            placeholder: 'Enter a new password (min 4 chars)…',
+            autocomplete: 'new-password', disabled: !canWrite,
+          }),
+          h('span', { class: 'field__hint' }, 'Applies immediately to /nex/, LuCI Argon (System → Administration), and SSH root login.')),
+        h('label', { class: 'kv__row' },
+          h('span', { class: 'kv__k' }, 'Require password login on /nex/ portal startup'),
+          h('span', { class: 'kv__v' }, toggle({
+            label: authState.require_login ? 'required' : 'off (instant open)',
+            checked: !!authState.require_login,
+            disabled: !canWrite,
+            onChange: async (v) => {
+              ctx.busy(true);
+              try {
+                const res = await api.setPassword({ require_login: v });
+                if (res?.error) throw new Error(res.error);
+                ctx.toast(v ? 'Password prompt enabled on /nex/ startup.' : 'Passwordless /nex/ startup enabled.', 'ok');
+              } catch (err) {
+                ctx.toast(`Could not update portal lock: ${explainError(err)}`, 'err', { sticky: true });
+              } finally { ctx.busy(false); refresh(); }
+            },
+          }))),
+        canWrite
+          ? h('div', { class: 'row' },
+              h('button', {
+                class: 'btn btn--primary btn--sm',
+                type: 'button',
+                onclick: async () => {
+                  const pw = document.getElementById('admin-new-pass')?.value ?? '';
+                  if (pw.length < 4) {
+                    ctx.toast('Please enter at least 4 characters for the new password.', 'warn');
+                    return;
+                  }
+                  ctx.busy(true);
+                  try {
+                    const res = await api.setPassword({ password: pw, require_login: true });
+                    if (res?.error) throw new Error(res.error);
+                    ctx.toast('Admin password updated for /nex/, LuCI Argon, and SSH!', 'ok');
+                  } catch (err) {
+                    ctx.toast(`Password update failed: ${explainError(err)}`, 'err', { sticky: true });
+                  } finally { ctx.busy(false); refresh(); }
+                },
+              }, 'Set / Update Password'),
+              h('button', {
+                class: 'btn btn--ghost btn--sm',
+                type: 'button',
+                onclick: async () => {
+                  ctx.busy(true);
+                  try {
+                    const res = await api.setPassword({ password: '', require_login: false });
+                    if (res?.error) throw new Error(res.error);
+                    ctx.toast('Password removed — /nex/ and LuCI are now passwordless.', 'ok');
+                  } catch (err) {
+                    ctx.toast(`Could not clear password: ${explainError(err)}`, 'err', { sticky: true });
+                  } finally { ctx.busy(false); refresh(); }
+                },
+              }, 'Remove Password (Passwordless Mode)'))
+          : null),
+    }));
 
     // ── Encrypted DNS-over-HTTPS (DoH) & Ad-Block Switcher ────────────────
     if (doh && !doh.__error && !doh.__missing) {

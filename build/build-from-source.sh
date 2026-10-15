@@ -10,7 +10,7 @@
 #   - patches/mt76/201-mt7615-vht-beamformer-capability-and-sounding.patch
 #
 # Usage:
-#   ./build/build-from-source.sh [--branch v24.10.2] [--jobs N] [--config-only]
+#   ./build/build-from-source.sh [--branch main|v24.10.2] [--jobs N] [--config-only]
 # ===========================================================================
 set -euo pipefail
 

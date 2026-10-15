@@ -659,6 +659,66 @@ method_hardware_chips() {
 JSON
 }
 
+
+# ===========================================================================
+# Router Admin Password & Optional /nex/ Portal Lock (Synced with LuCI & SSH)
+# ===========================================================================
+method_auth_status() {
+	local pw_set req_login
+	pw_set="$(awk -F: '$1=="root" {print ($2!="" && $2!="!" && $2!="*") ? 1 : 0; exit}' /etc/shadow 2>/dev/null)"
+	[ -z "$pw_set" ] && pw_set=0
+	req_login="$(uci -q get nexrouter.core.require_login 2>/dev/null || echo 0)"
+	cat <<JSON
+{
+  "password_set": $(jbool "$pw_set"),
+  "require_login": $(jbool "$req_login"),
+  "username": "root",
+  "sync_targets": ["NexRouter /nex/ Portal", "LuCI Argon Web UI", "SSH / Serial Console"],
+  "note": $(jstr "By default no password is required. If you set a password here, it updates /etc/shadow for both /nex/ and LuCI Argon.")
+}
+JSON
+}
+
+method_set_password() {
+	local pw="$1" req="$2"
+	case "$req" in ''|0|1) ;; *) err "require_login must be 0 or 1"; return ;; esac
+
+	# Reject control characters or newlines
+	case "$pw" in
+		*$(printf '')*|*$(printf '
+')*)
+			err "password contains invalid control characters"
+			return ;;
+	esac
+
+	if [ -z "$pw" ] && [ "$req" = "0" ]; then
+		# Clear root password -> return to passwordless mode
+		passwd -d root >/dev/null 2>&1 || true
+		uci -q set nexrouter.core.require_login='0'
+		uci -q commit nexrouter
+		method_auth_status
+		return
+	fi
+
+	if [ -n "$pw" ]; then
+		if [ "${#pw}" -lt 4 ]; then
+			err "password must be at least 4 characters (or leave blank with require_login=0 to clear)"
+			return
+		fi
+		printf '%s
+%s
+' "$pw" "$pw" | passwd root >/dev/null 2>&1 || {
+			err "failed to update root password in /etc/shadow"
+			return
+		}
+		[ -z "$req" ] && req="1"
+	fi
+
+	[ -n "$req" ] && uci -q set nexrouter.core.require_login="$req"
+	uci -q commit nexrouter
+	method_auth_status
+}
+
 method_farlink() {
 	if [ -r /var/run/nexrouter/farlink_status.json ]; then
 		cat /var/run/nexrouter/farlink_status.json
@@ -683,6 +743,8 @@ do_list() {
   "farlink": {},
   "doh_get": {},
   "hardware_chips": {},
+  "auth_status": {},
+  "set_password": {"password":"new root password","require_login":"0|1"},
   "doh_set": {"provider":"cloudflare|adguard|quad9|google|cloudflare_family","enabled":"0|1"},
   "insight_devices": {},
   "insight_anomalies": {},
@@ -715,6 +777,10 @@ do_call() {
 		farlink)              method_farlink ;;
 		doh_get)              method_doh_get ;;
 		hardware_chips)       method_hardware_chips ;;
+		auth_status)          method_auth_status ;;
+		set_password)
+			p1="$(param password)"; p2="$(param require_login)"
+			method_set_password "$p1" "$p2" ;;
 		doh_set)
 			p1="$(param provider)"; p2="$(param enabled)"
 			method_doh_set "$p1" "$p2" ;;

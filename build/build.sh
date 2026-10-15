@@ -34,7 +34,7 @@
 set -euo pipefail
 
 # ---- defaults -------------------------------------------------------------
-RELEASE="24.10.2"
+RELEASE="snapshot"
 TARGET="ramips/mt7621"
 PROFILE="xiaomi_redmi-router-ac2100"
 CLEAN=0
@@ -207,11 +207,20 @@ if [ ! -x "$IB_DIR/Makefile" ] && [ ! -f "$IB_DIR/Makefile" ]; then
   exit 1
 fi
 
-# ---- stage custom offline packages ---------------------------------------
-if [ -d "$ROOT/packages" ] && compgen -G "$ROOT/packages/*.ipk" > /dev/null; then
-  echo "==> staging custom packages into ImageBuilder"
-  mkdir -p "$IB_DIR/packages"
-  cp -a "$ROOT/packages/"*.ipk "$IB_DIR/packages/"
+# ---- adapt package list for OpenWrt snapshot (apk) vs stable 24.10 (opkg) --
+if grep -q "CONFIG_USE_APK=y" "$IB_DIR/.config" 2>/dev/null; then
+  echo "==> detected OpenWrt SNAPSHOT (apk package manager)"
+  # In OpenWrt snapshot (apk), luci-app-opkg is replaced by luci-app-package-manager
+  # and local .ipk files are skipped unless available in the apk feed.
+  PACKAGES_ADD="${PACKAGES_ADD//luci-app-opkg/luci-app-package-manager}"
+  PACKAGES_ADD="${PACKAGES_ADD//luci-theme-argon/}"
+  PACKAGES_ADD="${PACKAGES_ADD//luci-app-argon-config/}"
+else
+  if [ -d "$ROOT/packages" ] && compgen -G "$ROOT/packages/*.ipk" > /dev/null; then
+    echo "==> staging custom .ipk packages into ImageBuilder"
+    mkdir -p "$IB_DIR/packages"
+    cp -a "$ROOT/packages/"*.ipk "$IB_DIR/packages/"
+  fi
 fi
 
 # ---- assemble the FILES/ overlay -----------------------------------------

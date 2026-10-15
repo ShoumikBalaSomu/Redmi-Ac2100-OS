@@ -488,10 +488,21 @@ function boot() {
     if (ubus.authenticated && !document.hidden && !state.busy) refreshVitals();
   }, 5000);
 
-  // Open the dashboard immediately without blocking on a password screen.
+  // Open the dashboard immediately when password lock is off (default);
+  // if the user explicitly enabled `require_login`, show the password gate.
   showApp();
   status('connecting to router…');
-  ubus.autoConnect().then(() => afterLogin()).catch(() => afterLogin());
+  ubus.autoConnect()
+    .then(() => ubus.authStatus().catch(() => null))
+    .then((auth) => {
+      if (auth && auth.require_login && auth.password_set) {
+        showGate('Password protection is enabled. Sign in with your root password.');
+        status('password required');
+      } else {
+        return afterLogin();
+      }
+    })
+    .catch(() => afterLogin());
 }
 
 if (document.readyState === 'loading') {

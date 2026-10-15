@@ -93,6 +93,8 @@ const cfg = {
   windowMinutes: 15,
   dohEnabled: true,
   dohProvider: 'cloudflare',
+  passwordSet: false,
+  requireLogin: false,
 };
 
 const PROFILES = {
@@ -379,6 +381,35 @@ const nexrouter = {
       driver: 'mt76',
       note: 'mt76 is the mainline driver. It has improved substantially but still trails the MediaTek proprietary driver used by stock firmware, particularly on 5 GHz (MT7615N). WED is not available on this SoC generation.',
     };
+  },
+
+  auth_status() {
+    return {
+      password_set: cfg.passwordSet,
+      require_login: cfg.requireLogin,
+      username: 'root',
+      sync_targets: ['NexRouter /nex/ Portal', 'LuCI Argon Web UI', 'SSH / Serial Console'],
+      note: 'By default no password is required. If you set a password here, it updates /etc/shadow for both /nex/ and LuCI Argon.',
+    };
+  },
+
+  set_password({ password = '', require_login } = {}) {
+    if (require_login !== undefined && !/^[01]$/.test(String(require_login))) {
+      return { error: 'require_login must be 0 or 1' };
+    }
+    if (!password && String(require_login) === '0') {
+      cfg.passwordSet = false;
+      cfg.requireLogin = false;
+      return this.auth_status();
+    }
+    if (password) {
+      if (String(password).length < 4) return { error: 'password must be at least 4 characters' };
+      cfg.passwordSet = true;
+      cfg.requireLogin = require_login !== undefined ? String(require_login) === '1' : true;
+    } else if (require_login !== undefined) {
+      cfg.requireLogin = String(require_login) === '1';
+    }
+    return this.auth_status();
   },
 
   doh_get() {
@@ -768,6 +799,8 @@ export function resetMockState() {
   cfg.windowMinutes = 15;
   cfg.dohEnabled = true;
   cfg.dohProvider = 'cloudflare';
+  cfg.passwordSet = false;
+  cfg.requireLogin = false;
   hwFlows = 0;
   swFlows = 0;
   return cfg;

@@ -306,6 +306,13 @@ export class UbusClient {
   farlink()           { return this.call('nexrouter', 'farlink'); }
   dohGet()            { return this.call('nexrouter', 'doh_get'); }
   hardwareChips()     { return this.call('nexrouter', 'hardware_chips'); }
+  authStatus()        { return this.call('nexrouter', 'auth_status'); }
+  setPassword({ password, require_login }) {
+    return this.call('nexrouter', 'set_password', {
+      ...(password === undefined ? {} : { password: String(password) }),
+      ...(require_login === undefined ? {} : { require_login: require_login ? '1' : '0' }),
+    });
+  }
   setDoh({ provider, enabled }) {
     return this.call('nexrouter', 'doh_set', {
       ...(provider === undefined ? {} : { provider: String(provider) }),
