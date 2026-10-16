@@ -195,7 +195,7 @@ configure_wifi_lowlevel() {
 		fi
 		[ -w "$phy/aql_enable" ] && printf '1' > "$phy/aql_enable" 2>/dev/null || true
 
-		if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] && [ ! -d "$phy/mt76/dbdc" ]; then
+		if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] && [ ! -e "$phy/mt76/dbdc" ]; then
 			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
 			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
 		fi

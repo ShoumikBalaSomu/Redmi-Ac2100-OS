@@ -10,6 +10,7 @@
 #   3. Validated JSON generation for `ubus call hostapd.*` and `farlink_status.json`.
 # ===========================================================================
 
+trap 'exit 0' INT TERM QUIT
 STATE_FILE="/var/run/nexrouter/farlink_status.json"
 BANDIT_STATE="/var/run/nexrouter/bandit_arms.tsv"
 PREV_BYTES_FILE="/var/run/nexrouter/radio_bytes.prev"

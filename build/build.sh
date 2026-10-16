@@ -297,7 +297,7 @@ mkdir -p "$FILES/etc"
 cat > "$FILES/etc/nexrouter-release" <<EOF
 NEXROUTER_NAME="NexRouter OS"
 NEXROUTER_VERSION=$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)
-NEXROUTER_CODENAME="Apex-Silicon-Argon-FileManager-Verified-v5.1"
+NEXROUTER_CODENAME="Apex-Silicon-Linux6.18.55-Verified-v5.2"
 NEXROUTER_TARGET=$TARGET
 NEXROUTER_DEVICE=$PROFILE
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
