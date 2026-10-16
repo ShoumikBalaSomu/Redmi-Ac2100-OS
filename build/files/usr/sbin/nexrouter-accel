@@ -30,13 +30,25 @@ apply_mt7603_and_mt7615_registers() {
 			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
 		else
 			# MT7615N (5 GHz 4x4, PCIe0):
-			# Program MT_AGG_ACR (0x21210) per mt_wifi v5.0.5.0 to prevent false RTS on A-MPDU retries
+			# 1. Program MT_AGG_ACR (0x21210) per mt_wifi v5.0.5.0 to prevent false RTS on A-MPDU retries
 			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null || true
 			cur_acr="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
 			case "$cur_acr" in
 				0x*)
 					new_acr="$(printf '0x%08x' $(( cur_acr & ~0x4 )) 2>/dev/null)"
 					[ -n "$new_acr" ] && printf '%s\n' "$new_acr" > "$phy/mt76/regval" 2>/dev/null || true
+					;;
+			esac
+			# 2. Program MT_DELAY_INT_CFG (0x4210 = 0x80108010) for 16-pkt / 20us HW IRQ coalescing (#402)
+			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			printf '0x80108010\n' > "$phy/mt76/regval" 2>/dev/null || true
+			# 3. Program MT_WPDMA_GLO_CFG (0x4208): enable TX_WB_DDONE (BIT 6) & 128B/256B PCIe DMA burst
+			printf '0x4208\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			cur_glo="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
+			case "$cur_glo" in
+				0x*)
+					new_glo="$(printf '0x%08x' $(( cur_glo | 0x40 )) 2>/dev/null)"
+					[ -n "$new_glo" ] && printf '%s\n' "$new_glo" > "$phy/mt76/regval" 2>/dev/null || true
 					;;
 			esac
 		fi

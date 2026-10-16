@@ -1109,6 +1109,33 @@ export function panelSettings(api, ctx) {
           : null),
     }));
 
+    // ── LuCI File Manager (`luci-app-filemanager`) & Hardware Register Engine ─
+    nodes.push(card({
+      title: 'On-Router File Manager (luci-app-filemanager) & Silicon Register Engine (v4.4)',
+      variant: 'ok',
+      note: 'Browse, edit, upload, and download any file on the 128 MiB UBI rootfs (/etc/config/wireless, /etc/init.d/nexrouter-core, /usr/sbin/nexrouter-accel) directly from your browser via the bundled LuCI File Manager.',
+      body: h('div', { class: 'stack' },
+        kv([
+          ['LuCI File Manager Path', h('code', {}, '/cgi-bin/luci/admin/system/filemanager')],
+          ['Backend RPC & CGI', h('code', {}, 'rpcd-mod-file + cgi-io + ucode-mod-fs (Full RW ACLs)')],
+          ['MT7615N WPDMA Burst & IRQ Coalescing', h('code', {}, '0x4208 (TX_WB_DDONE + 256B Burst) & 0x4210 = 0x80108010 (16-pkt/20us)')],
+          ['MT7621AT PCIe RC & DDR3 Controller', h('code', {}, 'PCIE_PORT_LINK_CONTROL N_FTS=0x50 + memc 0x04 Prefetch/Write-Coalesce')],
+        ]),
+        h('div', { class: 'row' },
+          h('a', {
+            class: 'btn btn--primary btn--sm',
+            href: '/cgi-bin/luci/admin/system/filemanager',
+            target: '_blank',
+            rel: 'noopener',
+          }, 'Open LuCI File Manager ↗'),
+          h('a', {
+            class: 'btn btn--ghost btn--sm',
+            href: '/cgi-bin/luci/',
+            target: '_blank',
+            rel: 'noopener',
+          }, 'Open Full LuCI Argon Dashboard ↗'))),
+    }));
+
     // ── Encrypted DNS-over-HTTPS (DoH) & Ad-Block Switcher ────────────────
     if (doh && !doh.__error && !doh.__missing) {
       const providers = Array.isArray(doh.providers) ? doh.providers : [];

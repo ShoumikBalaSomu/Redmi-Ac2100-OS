@@ -1,139 +1,362 @@
 {
-	"unauthenticated": {
-		"description": "Passwordless LAN access for NexRouter /nex/ portal",
-		"read": {
-			"ubus": {
-				"nexrouter": [ "*" ],
-				"system": [ "*" ],
-				"network": [ "*" ],
-				"network.device": [ "*" ],
-				"network.interface": [ "*" ],
-				"network.interface.wan": [ "*" ],
-				"network.interface.lan": [ "*" ],
-				"network.wireless": [ "*" ],
-				"uci": [ "*" ],
-				"file": [ "*" ],
-				"iwinfo": [ "*" ],
-				"service": [ "*" ],
-				"log": [ "*" ],
-				"nlbwmon": [ "*" ],
-				"hostapd": [ "*" ],
-				"luci-rpc": [ "*" ]
-			}
-		},
-		"write": {
-			"ubus": {
-				"nexrouter": [ "*" ],
-				"system": [ "*" ],
-				"network": [ "*" ],
-				"network.device": [ "*" ],
-				"network.wireless": [ "*" ],
-				"uci": [ "*" ],
-				"file": [ "*" ],
-				"service": [ "*" ],
-				"log": [ "*" ],
-				"nlbwmon": [ "*" ]
-			}
-		}
-	},
-
-	"superuser": {
-		"description": "Superuser access including NexRouter methods",
-		"read": {
-			"ubus": {
-				"nexrouter": [ "*" ]
-			}
-		},
-		"write": {
-			"ubus": {
-				"nexrouter": [ "*" ]
-			}
-		}
-	},
-
-	"nexrouter-readonly": {
-		"description": "NexRouter dashboard — read-only access",
-		"read": {
-			"ubus": {
-				"nexrouter": [
-					"overview",
-					"performance",
-					"profiles",
-					"wifi",
-					"farlink",
-					"doh_get",
-					"hardware_chips",
-					"auth_status",
-					"overclock",
-					"recovery",
-					"export_get",
-					"insight_devices",
-					"insight_anomalies",
-					"insight_config"
-				],
-				"system": [ "board", "info", "nandupgrade" ],
-				"network.device": [ "status" ],
-				"network.interface": [ "status" ],
-				"network.interface.wan": [ "status" ],
-				"network.interface.lan": [ "status" ],
-				"iwinfo": [ "info", "scanlist", "freqlist", "txpowerlist", "countrylist" ],
-				"file": [ "stat" ],
-				"luci-rpc": [ "getDHCPLeases", "getConntrackList", "getProcessStat" ],
-				"nlbwmon": [ "*" ],
-				"hostapd": [ "get_status" ]
-			}
-		}
-	},
-
-	"nexrouter-write": {
-		"description": "NexRouter dashboard — configuration changes",
-		"write": {
-			"ubus": {
-				"nexrouter": [
-					"apply_profile",
-					"set_offload",
-					"export_set",
-					"doh_set",
-					"set_password",
-					"insight_config_set"
-				]
-			}
-		}
-	},
-
-	"nexrouter-admin": {
-		"description": "Full administrative access (root)",
-		"read": {
-			"ubus": {
-				"nexrouter": [ "*" ],
-				"system": [ "*" ],
-				"network": [ "*" ],
-				"network.device": [ "*" ],
-				"network.interface": [ "*" ],
-				"network.wireless": [ "*" ],
-				"uci": [ "*" ],
-				"file": [ "*" ],
-				"iwinfo": [ "*" ],
-				"service": [ "*" ],
-				"log": [ "*" ],
-				"nlbwmon": [ "*" ],
-				"hostapd": [ "*" ],
-				"luci-rpc": [ "*" ]
-			}
-		},
-		"write": {
-			"ubus": {
-				"nexrouter": [ "*" ],
-				"system": [ "*" ],
-				"network": [ "*" ],
-				"network.device": [ "*" ],
-				"network.wireless": [ "*" ],
-				"uci": [ "*" ],
-				"file": [ "*" ],
-				"service": [ "*" ],
-				"log": [ "*" ],
-				"nlbwmon": [ "*" ]
-			}
-		}
-	}
+  "unauthenticated": {
+    "description": "Passwordless LAN access for NexRouter /nex/ portal & LuCI File Manager",
+    "read": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "system": [
+          "*"
+        ],
+        "network": [
+          "*"
+        ],
+        "network.device": [
+          "*"
+        ],
+        "network.interface": [
+          "*"
+        ],
+        "network.interface.wan": [
+          "*"
+        ],
+        "network.interface.lan": [
+          "*"
+        ],
+        "network.wireless": [
+          "*"
+        ],
+        "uci": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ],
+        "iwinfo": [
+          "*"
+        ],
+        "service": [
+          "*"
+        ],
+        "log": [
+          "*"
+        ],
+        "nlbwmon": [
+          "*"
+        ],
+        "hostapd": [
+          "*"
+        ],
+        "luci-rpc": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "list",
+          "read",
+          "exec"
+        ],
+        "/": [
+          "list",
+          "read"
+        ]
+      },
+      "cgi-io": [
+        "download",
+        "backup",
+        "exec"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "system": [
+          "*"
+        ],
+        "network": [
+          "*"
+        ],
+        "network.device": [
+          "*"
+        ],
+        "network.wireless": [
+          "*"
+        ],
+        "uci": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ],
+        "service": [
+          "*"
+        ],
+        "log": [
+          "*"
+        ],
+        "nlbwmon": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "write",
+          "exec"
+        ],
+        "/": [
+          "write"
+        ]
+      },
+      "cgi-io": [
+        "upload",
+        "exec"
+      ]
+    }
+  },
+  "superuser": {
+    "description": "Superuser access including NexRouter methods and LuCI File Manager",
+    "read": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "list",
+          "read",
+          "exec"
+        ],
+        "/": [
+          "list",
+          "read"
+        ]
+      },
+      "cgi-io": [
+        "download",
+        "backup",
+        "exec"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "write",
+          "exec"
+        ],
+        "/": [
+          "write"
+        ]
+      },
+      "cgi-io": [
+        "upload",
+        "exec"
+      ]
+    }
+  },
+  "nexrouter-readonly": {
+    "description": "NexRouter dashboard \u2014 read-only access",
+    "read": {
+      "ubus": {
+        "nexrouter": [
+          "overview",
+          "performance",
+          "profiles",
+          "wifi",
+          "farlink",
+          "doh_get",
+          "hardware_chips",
+          "auth_status",
+          "overclock",
+          "recovery",
+          "export_get",
+          "insight_devices",
+          "insight_anomalies",
+          "insight_config"
+        ],
+        "system": [
+          "board",
+          "info",
+          "nandupgrade"
+        ],
+        "network.device": [
+          "status"
+        ],
+        "network.interface": [
+          "status"
+        ],
+        "network.interface.wan": [
+          "status"
+        ],
+        "network.interface.lan": [
+          "status"
+        ],
+        "iwinfo": [
+          "info",
+          "scanlist",
+          "freqlist",
+          "txpowerlist",
+          "countrylist"
+        ],
+        "file": [
+          "stat",
+          "list",
+          "read"
+        ],
+        "luci-rpc": [
+          "getDHCPLeases",
+          "getConntrackList",
+          "getProcessStat"
+        ],
+        "nlbwmon": [
+          "*"
+        ],
+        "hostapd": [
+          "get_status"
+        ]
+      }
+    }
+  },
+  "nexrouter-write": {
+    "description": "NexRouter dashboard \u2014 configuration changes",
+    "write": {
+      "ubus": {
+        "nexrouter": [
+          "apply_profile",
+          "set_offload",
+          "export_set",
+          "doh_set",
+          "set_password",
+          "insight_config_set"
+        ]
+      }
+    }
+  },
+  "nexrouter-admin": {
+    "description": "Full administrative access (root) including LuCI File Manager",
+    "read": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "system": [
+          "*"
+        ],
+        "network": [
+          "*"
+        ],
+        "network.device": [
+          "*"
+        ],
+        "network.interface": [
+          "*"
+        ],
+        "network.wireless": [
+          "*"
+        ],
+        "uci": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ],
+        "iwinfo": [
+          "*"
+        ],
+        "service": [
+          "*"
+        ],
+        "log": [
+          "*"
+        ],
+        "nlbwmon": [
+          "*"
+        ],
+        "hostapd": [
+          "*"
+        ],
+        "luci-rpc": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "list",
+          "read",
+          "exec"
+        ],
+        "/": [
+          "list",
+          "read"
+        ]
+      },
+      "cgi-io": [
+        "download",
+        "backup",
+        "exec"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "nexrouter": [
+          "*"
+        ],
+        "system": [
+          "*"
+        ],
+        "network": [
+          "*"
+        ],
+        "network.device": [
+          "*"
+        ],
+        "network.wireless": [
+          "*"
+        ],
+        "uci": [
+          "*"
+        ],
+        "file": [
+          "*"
+        ],
+        "service": [
+          "*"
+        ],
+        "log": [
+          "*"
+        ],
+        "nlbwmon": [
+          "*"
+        ]
+      },
+      "file": {
+        "/*": [
+          "write",
+          "exec"
+        ],
+        "/": [
+          "write"
+        ]
+      },
+      "cgi-io": [
+        "upload",
+        "exec"
+      ]
+    }
+  }
 }

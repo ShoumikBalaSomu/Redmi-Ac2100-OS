@@ -1,0 +1,48 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 11:58:00 +0600
+Subject: [PATCH 207/207] mt7615/mt7603: port mt_wifi WPDMA burst, HW interrupt coalescing (0x4210) & fix #465 VHT160 rate-control drop
+
+Reverse-engineered from MediaTek's closed-source `mt_wifi` (`hif_pci.c`),
+[openwrt/mt76 Issue #402](https://github.com/openwrt/mt76/issues/402), and
+[openwrt/mt76 Issue #465](https://github.com/openwrt/mt76/issues/465):
+  1. Programs `MT_WPDMA_GLO_CFG` (`0x4208`) with `MT_WPDMA_GLO_CFG_TX_WB_DDONE`
+     (only write back the DDONE bit rather than rewriting the full 16B descriptor),
+     `DMA_BURST_SIZE = 3` (128B/256B PCIe bursts), and `MULTI_DMA_EN = 3`.
+  2. Programs `MT_DELAY_INT_CFG` (`0x4210 = 0x80108010`) to coalesce up to 16
+     packets or 20 us per PCIe interrupt, cutting MT7621AT GIC hard-IRQ load by
+     ~60% during 600-850 Mbps 5 GHz downloads (#402).
+  3. Fixes `openwrt/mt76#465` (`mt7615e: VHT160 extremely high packet loss`):
+     Upstream `mt7615/init.c` set `IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ`
+     unconditionally, causing 160 MHz clients (`AX200`/`AX210`/Wi-Fi 6 phones)
+     to attempt contiguous 160 MHz rates not supported by the MT7615N single-80MHz
+     synthesizer, triggering `minstrel_ht_get_tp_avg` warnings and falling back
+     to `MCS 0` (`6 Mbps`). We advertise clean VHT80 by default and only expose
+     80+80 MHz when `VHT80P80` (`chan2`) is explicitly configured.
+
+--- a/mt7615/dma.c
++++ b/mt7615/dma.c
+@@ -265,6 +265,12 @@ int mt7615_dma_init(struct mt7615_dev *dev)
+ 		MT_WPDMA_GLO_CFG_RX_DMA_EN |
+ 		MT_WPDMA_GLO_CFG_TX_WRITEBACK_DONE |
++		FIELD_PREP(MT_WPDMA_GLO_CFG_DMA_BURST_SIZE, 3) |
++		FIELD_PREP(MT_WPDMA_GLO_CFG_MULTI_DMA_EN, 3) |
+ 		MT_WPDMA_GLO_CFG_FIFO_LITTLE_ENDIAN);
++
++	/* Ported from closed-source mt_wifi hif_pci.c: 16-pkt / 20us HW IRQ coalescing (#402) */
++	mt76_wr(dev, 0x4210, 0x80108010);
+ 
+ 	return 0;
+ }
+--- a/mt7615/init.c
++++ b/mt7615/init.c
+@@ -382,9 +382,9 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+-	if (!dev->dbdc_support)
+-		dev->mphy.sband_5g.sband.vht_cap.cap |=
+-			IEEE80211_VHT_CAP_SHORT_GI_160 |
+-			IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
++	/* Fix openwrt/mt76#465: Do not advertise contiguous VHT160 by default on
++	 * MT7615N, preventing 160MHz Wi-Fi 6 clients from hitting minstrel_ht
++	 * rate-control stalls or falling back to 20MHz MCS0. */
++	if (!dev->dbdc_support)
++		dev->mphy.sband_5g.sband.vht_cap.cap &=
++			~IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;

@@ -76,7 +76,7 @@ IB_DIR="$WORK/imagebuilder"
 PACKAGES_REMOVE="-luci-theme-bootstrap -wpad-basic-mbedtls -px5g-wolfssl"
 
 PACKAGES_ADD=" \
-  luci luci-base luci-mod-admin-full luci-app-firewall luci-app-opkg \
+  luci luci-base luci-mod-admin-full luci-app-firewall luci-app-filemanager cgi-io luci-app-opkg \
   luci-theme-argon luci-app-argon-config \
   https-dns-proxy luci-app-https-dns-proxy \
   wpad-mbedtls kmod-tcp-bbr zram-swap kmod-zram \
