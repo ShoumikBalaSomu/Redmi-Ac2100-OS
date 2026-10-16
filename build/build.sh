@@ -123,9 +123,10 @@ PERL5_DIR="$WORK/perl5"
 mkdir -p "$PERL5_DIR"
 if ! perl -MFindBin -e 1 >/dev/null 2>&1; then
   echo "==> bootstrapping local perl modules in $PERL5_DIR"
-  mkdir -p "$PERL5_DIR/JSON" "$PERL5_DIR/Time"
+  mkdir -p "$PERL5_DIR/JSON/PP" "$PERL5_DIR/Time"
   [ -f "$PERL5_DIR/FindBin.pm" ] || curl -sL "https://raw.githubusercontent.com/Perl/perl5/blead/dist/FindBin/lib/FindBin.pm" -o "$PERL5_DIR/FindBin.pm"
   [ -f "$PERL5_DIR/JSON/PP.pm" ] || curl -sL "https://raw.githubusercontent.com/makamaka/JSON-PP/master/lib/JSON/PP.pm" -o "$PERL5_DIR/JSON/PP.pm"
+  [ -f "$PERL5_DIR/JSON/PP/Boolean.pm" ] || curl -sL "https://raw.githubusercontent.com/makamaka/JSON-PP/master/lib/JSON/PP/Boolean.pm" -o "$PERL5_DIR/JSON/PP/Boolean.pm"
   if [ ! -f "$PERL5_DIR/Time/Piece.pm" ]; then
     cat << 'EOF' > "$PERL5_DIR/Time/Piece.pm"
 package Time::Piece;
@@ -215,6 +216,11 @@ if grep -q "CONFIG_USE_APK=y" "$IB_DIR/.config" 2>/dev/null; then
   PACKAGES_ADD="${PACKAGES_ADD//luci-app-opkg/luci-app-package-manager}"
   PACKAGES_ADD="${PACKAGES_ADD//luci-theme-argon/}"
   PACKAGES_ADD="${PACKAGES_ADD//luci-app-argon-config/}"
+  if [ -d "$ROOT/packages" ] && compgen -G "$ROOT/packages/*.apk" > /dev/null; then
+    echo "==> staging custom .apk packages into ImageBuilder"
+    mkdir -p "$IB_DIR/packages"
+    cp -a "$ROOT/packages/"*.apk "$IB_DIR/packages/"
+  fi
 else
   if [ -d "$ROOT/packages" ] && compgen -G "$ROOT/packages/*.ipk" > /dev/null; then
     echo "==> staging custom .ipk packages into ImageBuilder"
@@ -289,7 +295,11 @@ find "$FILES" -type f -path '*/config/*' -exec chmod 0644 {} +
 # Record build provenance inside the image so it is self-identifying.
 mkdir -p "$FILES/etc"
 cat > "$FILES/etc/nexrouter-release" <<EOF
+NEXROUTER_NAME="NexRouter OS"
 NEXROUTER_VERSION=$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)
+NEXROUTER_CODENAME="Apex-Silicon-TRGMII-WiFi6-Hybrid-v5.0"
+NEXROUTER_TARGET=$TARGET
+NEXROUTER_DEVICE=$PROFILE
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 OPENWRT_RELEASE=$RELEASE
 TARGET=$TARGET
@@ -308,6 +318,15 @@ make image \
   BIN_DIR="$OUT" \
   EXTRA_IMAGE_NAME="nexrouter" \
   -j"$JOBS"
+
+# Standardize binary name and checksum
+SYSUPGRADE_RAW="$(find "$OUT" -maxdepth 1 -name "*squashfs-sysupgrade.bin" ! -name "NexRouter-OS-*" | head -n 1)"
+V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "5.0.0")"
+if [ -n "$SYSUPGRADE_RAW" ] && [ -f "$SYSUPGRADE_RAW" ]; then
+  STANDARDIZED_NAME="NexRouter-OS-v${V_TAG}-ramips-mt7621-${PROFILE}-squashfs-sysupgrade.bin"
+  cp -f "$SYSUPGRADE_RAW" "$OUT/$STANDARDIZED_NAME"
+  ( cd "$OUT" && sha256sum "$STANDARDIZED_NAME" > "${STANDARDIZED_NAME}.sha256" )
+fi
 
 # ---- report ---------------------------------------------------------------
 echo
