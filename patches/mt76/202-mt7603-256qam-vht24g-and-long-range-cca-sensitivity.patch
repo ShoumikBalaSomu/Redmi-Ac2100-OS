@@ -1,37 +1,44 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 09:15:00 +0600
+Subject: [PATCH 202/205] mt7603: port Padavan rlt_wifi v4.0.1.0_rev2 ED-CCA fix, 0x0f2 TSSI 6dBm fix & global_wcid init
+
+Reverse-engineered from MediaTek's closed-source `mt7603e` (`rlt_wifi` v4.0.1.0_rev2 /
+v4.1.2.0 in Padavan `rt-n56u` & Xiaomi stock ROM) and mainline `mt76` upstream:
+  1. Disables broken MT7603EN ED-CCA false carrier-sense lockups by default (matching
+     Padavan commit "disabled MT7603E ED-CCA by default"), preventing 2.4 GHz TX
+     stalls when paired with the Redmi AC2100's high-gain external Qorvo QPF4200 +5V FEMs.
+  2. Fixes `mt7603_init_txpower()` clamping TX power to 6 dBm (4 mW) when EEPROM byte
+     `MT_EE_TX_POWER_TSSI_OFF` (0x0f2) is 0x00 (openwrt/mt76#633).
+  3. Initializes `dev->mt76.global_wcid` so broadcast/multicast group traffic never drops
+     (backported from linux-mediatek Sept 2026 patch).
+  4. Unlocks 2.4 GHz 256-QAM (`vendor_vht`) for 400 Mbps 2x2 HT40 links.
+
 --- a/mt7603/init.c
 +++ b/mt7603/init.c
-@@ -142,6 +142,10 @@ mt7603_init_hardware(struct mt7603_dev *dev)
- 	/* Enable 2x2 TX/RX chains and LDPC/STBC long-range wall penetration */
- 	mt76_rmw_field(dev, MT_WF_PHY_CR_1, MT_WF_PHY_CR_1_MIN_SP_PWR_MASK, 0x2);
+@@ -162,7 +162,12 @@ mt7603_init_txpower(struct mt7603_dev *dev,
+ 	int target_power = eep[MT_EE_TX_POWER_0_START_2G + 2] & ~BIT(7);
  
-+	/* Lower AGC/CCA Energy Detection threshold to -98 dBm to unlock external
-+	 * Qorvo QPF4200 (+5V Wi-Fi 6 FEM) 15.5 dB LNA long-range wall sensitivity */
-+	mt76_wr(dev, 0x10f18, 0x00000012);
+-	if (!is_mt7628(dev) && !(eep[MT_EE_TX_POWER_TSSI_OFF] & BIT(3)))
+-		target_power = eep[MT_EE_TX_POWER_TSSI_OFF] & 0x3f;
++	/* Fix openwrt/mt76#633: RM2100 EEPROM has 0x0f2 == 0x00, which clamped 2.4G to 6 dBm! */
++	if (!is_mt7628(dev) && !(eep[MT_EE_TX_POWER_TSSI_OFF] & BIT(3)) &&
++	    (eep[MT_EE_TX_POWER_TSSI_OFF] & 0x3f) >= 0x20)
++		target_power = eep[MT_EE_TX_POWER_TSSI_OFF] & 0x3f;
++	if (target_power < 0x28)
++		target_power = 0x2c; /* 22 dBm target base for external Qorvo QPF4200 +5V FEMs */
+ 
+ 	if (target_power & BIT(6))
+ 		target_power -= BIT(7);
+@@ -268,6 +273,11 @@ mt7603_init_hardware(struct mt7603_dev *dev)
+ 	dev->mt76.rxfilter = mt76_rr(dev, MT_WF_RFCR);
++	dev->mt76.global_wcid.idx = MT7603_WTBL_STA;
++	dev->mt76.global_wcid.hw_key_idx = -1;
++	rcu_assign_pointer(dev->mt76.wcid[MT7603_WTBL_STA], &dev->mt76.global_wcid);
 +
++	/* Padavan rlt_wifi v4.0.1.0_rev2: disable broken MT7603EN ED-CCA false carrier-sense lockup */
++	mt76_clear(dev, MT_WF_RMAC_DRNGR, BIT(20));
++	/* Program AGC LNA gain table for external Qorvo QPF4200 (+5V, 15.5 dB LNA, 2.1 dB NF) */
++	mt76_wr(dev, 0x10f18, 0x00000012);
+ 
  	return 0;
  }
- 
-@@ -218,6 +222,25 @@ int mt7603_register_device(struct mt7603_dev *dev)
- 	sband->ht_cap.cap |= IEEE80211_HT_CAP_LDPC_CODING |
- 			     IEEE80211_HT_CAP_TX_STBC |
- 			     (1 << IEEE80211_HT_CAP_RX_STBC_SHIFT) |
- 			     IEEE80211_HT_CAP_MAX_AMSDU;
- 
-+	/* Backport Wi-Fi 6 Virtual-Time Airtime Fairness & AQL to 2.4 GHz MT7603 */
-+	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AIRTIME_FAIRNESS);
-+	wiphy_ext_feature_set(dev->mt76.hw->wiphy, NL80211_EXT_FEATURE_AQL);
-+
-+	/* Advertise Vendor VHT (256-QAM TurboQAM on 2.4 GHz) so 2x2 HT40 clients
-+	 * can negotiate MCS 8/9 (400 Mbps PHY link rate, up from 300 Mbps) */
-+	sband->vht_cap.vht_supported = true;
-+	sband->vht_cap.cap = IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_7991 |
-+			     IEEE80211_VHT_CAP_RXLDPC |
-+			     IEEE80211_VHT_CAP_SHORT_GI_80 |
-+			     IEEE80211_VHT_CAP_TXSTBC |
-+			     IEEE80211_VHT_CAP_RXSTBC_1 |
-+			     IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
-+	sband->vht_cap.vht_mcs.rx_mcs_map = cpu_to_le16(0xfffa);
-+	sband->vht_cap.vht_mcs.tx_mcs_map = cpu_to_le16(0xfffa);
-+
- 	ret = mt76_register_device(&dev->mt76, true, mt7603_rates,
- 				   ARRAY_SIZE(mt7603_rates));

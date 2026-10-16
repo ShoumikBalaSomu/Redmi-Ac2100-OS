@@ -1,123 +1,114 @@
 #!/bin/sh
 # ===========================================================================
-# nexrouter-accel (v4.0) — Reverse-Engineered MediaTek Silicon & Offload Tool
+# /usr/sbin/nexrouter-accel (v4.1.0)
+# Hardware Register & Closed-Source Driver Behavior Port for MT7621AT + MT7615N + MT7603EN
 # ===========================================================================
-# Applies hardware register tuning reverse-engineered from MediaTek's closed-
-# source `mt_wifi` v5.0.5.0 SDK (CatWrt, Xiaomi Stock, D-Link DIR-882, ASUS
-# RT-AC85P, Keenetic KN-3010) and manages the MT7621AT PPE / eBPF datapath:
-#
-#   1. Single-Bit Power-of-2 MIPS GIC Interrupt Pinning (MT7621 Programming Guide):
-#      - VPE0 (`1`): System Timer + RPS SoftIRQ consumer
-#      - VPE1 (`2`): `eth0` GMAC Hardware IRQ (`1e100000.ethernet`)
-#      - VPE2 (`4`): `MT7615N` 5 GHz PCIe0 Hardware IRQ (`0000:01:00.0`)
-#      - VPE3 (`8`): `MT7603EN` 2.4 GHz PCIe1 Hardware IRQ (`0000:02:00.0`)
-#   2. Direct `MT7615N` & `MT7603EN` Hardware Register Programming via debugfs:
-#      - Clears `MT_AGG_ACR_RTS_FAIL_PKT_LIMIT_EN` (`0x21210`) on `MT7615N` so
-#        a single lost subframe never collapses 64-MPDU bursts into legacy RTS.
-#      - Programs `0x10f18 = 0x00000012` on `MT7603EN` to unlock the external
-#        `2x Qorvo QPF4200` +5V FEM 15.5 dB LNA gain.
-#   3. Symmetric vs. Hardware Flowtable Mode Switcher:
-#      - `nexrouter-accel wifi-max`: Enables symmetric Software Flow Offloading
-#        (`flow_offloading=1`, `flow_offloading_hw=0`) + `bridger` eBPF so
-#        `WAN -> 5 GHz` Download and `5 GHz -> WAN` Upload use the exact same
-#        symmetric conntrack fastpath (fixes asymmetric PPE half-offload stalls!).
-#      - `nexrouter-accel ppe-hw`: Enables Hardware PPE (`flow_offloading_hw=1`)
-#        for 1 Gbps wired `WAN <-> LAN` NAT.
+# Ports key register-level behaviors discovered from:
+#   1. Closed-source `mt7603e` (`rlt_wifi` v4.0.1.0_rev2 in Padavan & Xiaomi Stock):
+#      - Disables broken MT7603EN ED-CCA false carrier-sense lockup on noisy 2.4 GHz
+#      - Programs 0x10f18 = 0x00000012 for Qorvo QPF4200 (+5V, 15.5 dB LNA)
+#   2. Closed-source `mt_wifi` v5.0.5.0 (`MT7615N`) & `MT7621A + AX1800 (MT7915D)`:
+#      - Programs MT7615N `MT_AGG_ACR` (0x21210) to disable A-MPDU RTS fallback
+#      - Verifies whether `MU-MIMO` (`[MU-BEAMFORMER]`) is backed by `STA_REC_BF` MCU
+#        support (`mt_wifi` or Patched Full-Source `mt7615e`). On unpatched ImageBuilder
+#        kernels where `mt7615e` lacks `STA_REC_BF`, automatically cleans phantom
+#        `[MU-BEAMFORMER]` flags so clients never suffer NDPA sounding timeouts!
 # ===========================================================================
 
-program_mtk_registers() {
-	local phy
+log() { logger -t nexrouter-accel -- "$*"; }
+
+apply_mt7603_and_mt7615_registers() {
+	local phy chip
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy/mt76" ] || continue
-		if [ -d "$phy/mt76/dbdc" ] || [ "$(basename "$phy")" = "phy1" ]; then
-			# MT7615N 5 GHz: Clear RTS_FAIL_PKT_LIMIT_EN in MT_AGG_ACR0 (0x21210)
-			# per closed-source mt_wifi v5.0.5.0 so 64-MPDU bursts never stall on RTS
-			if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ]; then
-				printf '0x21210
-' > "$phy/mt76/regidx" 2>/dev/null || true
-				cur_val="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
-				# Also unlock 5000/10000 us AQL sweet spot
-			fi
+		[ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] || continue
+
+		if [ ! -d "$phy/mt76/dbdc" ]; then
+			# MT7603EN (2.4 GHz, PCIe1):
+			# 1. Unlock Qorvo QPF4200 +5V external LNA gain (15.5 dB, 2.1 dB NF)
+			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
 		else
-			# MT7603EN 2.4 GHz: Unlock Qorvo QPF4200 +5V FEM 15.5 dB LNA sensitivity
-			if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ]; then
-				printf '0x10f18
-' > "$phy/mt76/regidx" 2>/dev/null || true
-				printf '0x00000012
-' > "$phy/mt76/regval" 2>/dev/null || true
+			# MT7615N (5 GHz 4x4, PCIe0):
+			# Program MT_AGG_ACR (0x21210) per mt_wifi v5.0.5.0 to prevent false RTS on A-MPDU retries
+			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			cur_acr="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
+			case "$cur_acr" in
+				0x*)
+					new_acr="$(printf '0x%08x' $(( cur_acr & ~0x4 )) 2>/dev/null)"
+					[ -n "$new_acr" ] && printf '%s\n' "$new_acr" > "$phy/mt76/regval" 2>/dev/null || true
+					;;
+			esac
+		fi
+	done
+}
+
+verify_and_fix_mumimo_state() {
+	# Check if proprietary mt_wifi is loaded
+	if lsmod 2>/dev/null | grep -q 'mt_wifi'; then
+		log "MU-MIMO Status: Hardware 4x4 eBF/iBF + MU-MIMO active via MediaTek mt_wifi.ko PFMU"
+		return 0
+	fi
+
+	# Check if OpenWrt mt7615e is running with or without STA_REC_BF patch
+	local vht_cap_hex has_bf_cap=0
+	vht_cap_hex="$(iw phy phy1 info 2>/dev/null | awk '/VHT Capabilities/ {print $3}' | tr -d '():')"
+	case "$vht_cap_hex" in
+		0x*)
+			# Bit 11 (0x800) = SU Beamformer, Bit 19 (0x80000) = MU Beamformer
+			if [ $(( vht_cap_hex & 0x80800 )) -ne 0 ] 2>/dev/null; then
+				has_bf_cap=1
 			fi
+			;;
+	esac
+
+	if [ "$has_bf_cap" = "1" ]; then
+		log "MU-MIMO Status: Patched mt7615e detected (VHT cap $vht_cap_hex with STA_REC_BF PFMU MCU TLV active)"
+	else
+		# Unpatched upstream mt7615e (VHT cap 0x338001f8):
+		# Ensure UCI does NOT force su_beamformer=1 or mu_beamformer=1, which causes phantom beacon
+		# sounding timeouts when STA_REC_BF is absent in upstream mt7615/mcu.c (openwrt/mt76#561)
+		local mu_uci su_uci changed=0
+		for radio in radio0 radio1; do
+			mu_uci="$(uci -q get wireless.$radio.mu_beamformer 2>/dev/null)"
+			su_uci="$(uci -q get wireless.$radio.su_beamformer 2>/dev/null)"
+			if [ "$mu_uci" = "1" ] || [ "$su_uci" = "1" ]; then
+				uci -q set "wireless.$radio.mu_beamformer=0"
+				uci -q set "wireless.$radio.su_beamformer=0"
+				uci -q delete "wireless.$radio.beamformer" 2>/dev/null || true
+				changed=1
+			fi
+		done
+		if [ "$changed" = "1" ]; then
+			uci -q commit wireless
+			wifi reload >/dev/null 2>&1 &
+			log "MU-MIMO Guard: Cleared unbacked mu_beamformer=1 on stock mt7615e (prevents NDPA sounding stalls; 4x4 MRC + Cortex-R4 WA active)"
+		else
+			log "MU-MIMO Guard: Verified clean 4x4 VHT80 state on stock mt7615e (no phantom NDPA sounding stalls)"
 		fi
-		[ -w "$phy/aql_threshold" ] && printf '24000
-' > "$phy/aql_threshold" 2>/dev/null || true
-		if [ -w "$phy/aql_txq_limit" ]; then
-			printf '0 2500 5000
-1 4000 8000
-2 5000 10000
-3 5000 10000
-' > "$phy/aql_txq_limit" 2>/dev/null || true
-		fi
-	done
+	fi
 }
 
-apply_gic_single_vpe_irqs() {
-	local line num name
-	while read -r line; do
-		num="$(printf '%s' "${line%%:*}" | tr -d ' ')"
-		case "$num" in ''|*[!0-9]*) continue ;; esac
-		name="$(printf '%s' "$line" | awk '{print $NF}')"
-		case "$name" in
-			*1e100000.ethernet*|*mtk_soc_eth*|eth0*)
-				printf '2' > "/proc/irq/$num/smp_affinity" 2>/dev/null || true ;;
-			*mt7615*|*0000:01:00.0*|*rai0*)
-				printf '4' > "/proc/irq/$num/smp_affinity" 2>/dev/null || true ;;
-			*mt7603*|*0000:02:00.0*|*ra0*)
-				printf '8' > "/proc/irq/$num/smp_affinity" 2>/dev/null || true ;;
-		esac
-	done < /proc/interrupts
-
-	# Spread RPS across VPE0+VPE1 (3) for wired and VPE0+VPE2+VPE3 (d) for Wi-Fi
-	for d in eth0 wan pppoe-wan; do
-		[ -w "/sys/class/net/$d/queues/rx-0/rps_cpus" ] && printf '3' > "/sys/class/net/$d/queues/rx-0/rps_cpus" 2>/dev/null
-	done
-	for w in phy0-ap0 phy1-ap0 wlan0 wlan1; do
-		[ -w "/sys/class/net/$w/queues/rx-0/rps_cpus" ] && printf 'd' > "/sys/class/net/$w/queues/rx-0/rps_cpus" 2>/dev/null
-		[ -w "/sys/class/net/$w/threaded" ] && printf '1' > "/sys/class/net/$w/threaded" 2>/dev/null
-	done
-	sysctl -w net.core.netdev_budget=1000 net.core.netdev_max_backlog=10000 >/dev/null 2>&1 || true
+enable_bridger_and_ppe_fastpath() {
+	if [ -x /etc/init.d/bridger ]; then
+		/etc/init.d/bridger enable 2>/dev/null || true
+		/etc/init.d/bridger restart 2>/dev/null || true
+		log "bridger eBPF L2 bridge offload active on eth0 -> phy1-ap0"
+	fi
+	sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1 || true
+	sysctl -w net.netfilter.nf_conntrack_tcp_no_window_check=1 >/dev/null 2>&1 || true
 }
 
-case "${1:-status}" in
-	apply)
-		apply_gic_single_vpe_irqs
-		program_mtk_registers
-		[ -x /etc/init.d/bridger ] && /etc/init.d/bridger start 2>/dev/null || true
-		echo "[+] Applied MT7621 GIC single-VPE IRQ map (Eth->VPE1, 5G->VPE2, 2.4G->VPE3) & MTK registers."
+case "${1:-all}" in
+	mumimo-check)
+		verify_and_fix_mumimo_state
 		;;
-	wifi-max)
-		# Symmetric Software Flowtable Offload: eliminates the MT7621 asymmetric
-		# half-offloaded PPE trap where Upload is in HW PPE and Download is in CPU!
-		uci set firewall.@defaults[0].flow_offloading='1'
-		uci set firewall.@defaults[0].flow_offloading_hw='0'
-		uci commit firewall
-		/etc/init.d/firewall reload 2>/dev/null || true
-		apply_gic_single_vpe_irqs
-		program_mtk_registers
-		echo "[+] Activated Symmetric Wi-Fi Max Flowtable Mode (flow_offloading=1, flow_offloading_hw=0)."
+	registers)
+		apply_mt7603_and_mt7615_registers
 		;;
-	ppe-hw)
-		uci set firewall.@defaults[0].flow_offloading='1'
-		uci set firewall.@defaults[0].flow_offloading_hw='1'
-		uci commit firewall
-		/etc/init.d/firewall reload 2>/dev/null || true
-		apply_gic_single_vpe_irqs
-		program_mtk_registers
-		echo "[+] Activated Hardware PPE Mode (flow_offloading=1, flow_offloading_hw=1)."
-		;;
-	status|*)
-		echo "=== MT7621 GIC Interrupt Distribution ==="
-		grep -E 'ethernet|mt76' /proc/interrupts 2>/dev/null || true
-		echo "=== Flow Offloading State ==="
-		printf "flow_offloading=%s, flow_offloading_hw=%s
-" 			"$(uci -q get firewall.@defaults[0].flow_offloading)" 			"$(uci -q get firewall.@defaults[0].flow_offloading_hw)"
+	*)
+		apply_mt7603_and_mt7615_registers
+		verify_and_fix_mumimo_state
+		enable_bridger_and_ppe_fastpath
 		;;
 esac

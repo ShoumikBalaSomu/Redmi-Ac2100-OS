@@ -246,6 +246,7 @@ start() {
 	configure_napi_rps_and_lan_switch
 	configure_wifi_lowlevel
 	verify_offload
+	[ -x /usr/sbin/nexrouter-accel ] && /usr/sbin/nexrouter-accel all 2>/dev/null || true
 }
 
 stop() {

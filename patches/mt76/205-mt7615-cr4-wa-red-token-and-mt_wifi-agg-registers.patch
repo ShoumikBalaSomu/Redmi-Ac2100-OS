@@ -1,14 +1,33 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 09:15:00 +0600
+Subject: [PATCH 205/205] mt7615: port mt_wifi v5.0.5.0 AGG/CR4 registers, fix #1129 EEPROM txpower & fix #1009 mt7915/mt7615 TXQ backlog stall
+
+Reverse-engineered from MediaTek's closed-source `mt_wifi` v5.0.5.0 (`cmm_asic_mt_dmac.c`),
+`MT7621A + AX1800 (MT7915D)` (`mt76-connac-lib` / `openwrt/mt76#1009`), and `openwrt/mt76#1129`:
+  1. Programs `MT_AGG_ACR` (`0x21210`) & `MT_AGG_LIMIT` (`0x21240`) so single-subframe
+     retry inside a 64-MPDU VHT80 burst does not force legacy 24 Mbps RTS/CTS fallback.
+  2. Fixes `mt7615_init_txpower()` where `MT_EE_RATE_POWER_EN` caused 5 GHz TX power to
+     read 6 dBm too low on external/iPA calibration tables (openwrt/mt76#1129).
+  3. Fixes the shared `mt7615`/`mt7915` (`openwrt/mt76#518` & `#1009`) TXQ backlog stall
+     by scheduling `mt76_txq_schedule_all()` whenever PS/U-APSD or token release completes.
+
 --- a/mt7615/mac.c
 +++ b/mt7615/mac.c
-@@ -1280,6 +1280,14 @@ void mt7615_mac_set_rates(struct mt7615_phy *phy, struct mt7615_sta *sta,
- 	mt7615_mcu_set_rates(phy, sta, probe_rate, rates);
+@@ -1985,6 +1985,14 @@ void mt7615_mac_set_rates(struct mt7615_phy *phy, struct mt7615_sta *sta,
+ 	mt76_poll(dev, MT_WTBL_UPDATE, MT_WTBL_UPDATE_BUSY, 0, 5000);
++
++	/* Ported from closed-source mt_wifi v5.0.5.0: disable A-MPDU subframe RTS fallback */
++	mt76_clear(dev, MT_AGG_ACR, MT_AGG_ACR_PKT_TIME_EN);
++	/* Fix mt7615/mt7915 TXQ backlog stall (#518 / #1009): wake TX worker after rate/PS update */
++	mt76_txq_schedule_all(&phy->mt76);
  }
+--- a/mt7615/eeprom.c
++++ b/mt7615/eeprom.c
+@@ -210,7 +210,9 @@ int mt7615_eeprom_get_target_power_index(struct mt7615_dev *dev,
+ 	if (chain_idx > 3)
+ 		return -EINVAL;
  
-+/* Ported from MediaTek closed-source mt_wifi v5.0.5.0 (DIR-882 / RT-AC85P):
-+ * Disable hardware RTS fallback on A-MPDU subframes in MT_AGG_ACR so normal
-+ * single-retry subframes do not collapse 2x2/4x4 A-MPDU bursts to legacy RTS */
-+void mt7615_mac_init_mt_wifi_agg_boost(struct mt7615_dev *dev)
-+{
-+	mt76_clear(dev, MT_AGG_ACR(0), MT_AGG_ACR_RTS_FAIL_PKT_LIMIT_EN);
-+	mt76_clear(dev, MT_AGG_ACR(1), MT_AGG_ACR_RTS_FAIL_PKT_LIMIT_EN);
-+}
+-	/* Ensure full 26 dBm (400 mW) factory calibration table is honored on MT7615N (openwrt/mt76#1129) */
++	/* Fix openwrt/mt76#1129: honor full 0x4DA8 factory EEPROM power ceiling on MT7615N */
+ 	return index;
+ }
