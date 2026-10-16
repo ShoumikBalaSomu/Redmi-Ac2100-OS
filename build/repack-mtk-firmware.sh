@@ -110,7 +110,10 @@ APSDCapable=1
 ShortSlot=1
 AutoChannelSelect=0
 IEEE8021X=0
-AuthMode=WPA2PSK
+AuthMode=WPA2PSKWPA3PSK
+PMFMFPC=1
+PMFMFPR=0
+PMFSHA256=1
 EncrypType=AES
 WPAPSK1=12345678
 DefaultKeyID=1
@@ -156,7 +159,11 @@ upsert_dat_key "$MT7615_DAT" "Channel" "149"
 upsert_dat_key "$MT7615_DAT" "BeaconPeriod" "100"
 upsert_dat_key "$MT7615_DAT" "DtimPeriod" "1"
 upsert_dat_key "$MT7615_DAT" "TxPower" "100"
-upsert_dat_key "$MT7615_DAT" "AuthMode" "WPA2PSK"
+upsert_dat_key "$MT7615_DAT" "AuthMode" "WPA3PSK"
+upsert_dat_key "$MT7615_DAT" "IEEE80211W" "2"
+upsert_dat_key "$MT7615_DAT" "PMFMFPC" "1"
+upsert_dat_key "$MT7615_DAT" "PMFMFPR" "1"
+upsert_dat_key "$MT7615_DAT" "PMFSHA256" "1"
 upsert_dat_key "$MT7615_DAT" "EncrypType" "AES"
 upsert_dat_key "$MT7615_DAT" "WPAPSK1" "12345678"
 upsert_dat_key "$MT7615_DAT" "HT_BW" "1"

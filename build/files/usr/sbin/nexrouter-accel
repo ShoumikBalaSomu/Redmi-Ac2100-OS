@@ -89,6 +89,36 @@ verify_and_fix_mumimo_state() {
 	fi
 }
 
+
+enable_hw_wpa3_and_eip93_crypto() {
+	# 1. Load MT7621AT on-die EIP-93 Hardware Crypto Engine (0x1e004000, GIC IRQ 19)
+	modprobe crypto-hw-eip93 2>/dev/null || insmod /lib/modules/$(uname -r)/crypto-hw-eip93.ko 2>/dev/null || true
+	if grep -q 'eip93' /proc/crypto 2>/dev/null; then
+		log "MT7621AT EIP-93 Hardware Crypto Engine active (AES-128/256 CTR/CBC + HMAC-SHA256 DMA offload)"
+	fi
+
+	# 2. Ensure Hardware WPA3-SAE (CCMP-128 + 802.11w BIP-CMAC-128 in MT7615N/MT7603EN WTBL)
+	#    uses H2E (sae_pwe=2) and 24h wpa_group_rekey=86400 to prevent WTBL GTK PN desync (#494)
+	local iface band changed=0
+	for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' | cut -d. -f2); do
+		dev="$(uci -q get wireless.$iface.device 2>/dev/null)"
+		band="$(uci -q get wireless.$dev.band 2>/dev/null)"
+		if [ "$band" = "5g" ]; then
+			if [ "$(uci -q get wireless.$iface.wpa_group_rekey 2>/dev/null)" != "86400" ]; then
+				uci -q set "wireless.$iface.encryption=sae"
+				uci -q set "wireless.$iface.ieee80211w=2"
+				uci -q set "wireless.$iface.sae_pwe=2"
+				uci -q set "wireless.$iface.ocv=0"
+				uci -q set "wireless.$iface.wpa_group_rekey=86400"
+				uci -q set "wireless.$iface.eapol_key_retries=1"
+				changed=1
+			fi
+		fi
+	done
+	[ "$changed" = "1" ] && uci -q commit wireless
+	log "Hardware WPA3-SAE active: MT7615N/MT7603EN WTBL CCMP-128 + BIP-CMAC-128 + SAE-H2E (sae_pwe=2)"
+}
+
 enable_bridger_and_ppe_fastpath() {
 	if [ -x /etc/init.d/bridger ]; then
 		/etc/init.d/bridger enable 2>/dev/null || true
@@ -109,6 +139,7 @@ case "${1:-all}" in
 	*)
 		apply_mt7603_and_mt7615_registers
 		verify_and_fix_mumimo_state
+		enable_hw_wpa3_and_eip93_crypto
 		enable_bridger_and_ppe_fastpath
 		;;
 esac

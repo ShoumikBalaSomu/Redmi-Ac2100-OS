@@ -71,7 +71,7 @@ configure_irqs() {
 		case "$num" in ''|*[!0-9]*) continue ;; esac
 		name="$(printf '%s' "$line" | awk '{print $NF}')"
 		case "$name" in
-			*1e100000.ethernet*|*mtk_soc_eth*|*fe100000*|eth0*|gsw*)
+			*1e100000.ethernet*|*mtk_soc_eth*|*fe100000*|eth0*|gsw*|*1e004000.crypto*|*eip93*)
 				irq_eth="$irq_eth $num" ;;
 			*mt7603*|*0000:02:00.0*|*ra0*)
 				irq_2g="$irq_2g $num" ;;

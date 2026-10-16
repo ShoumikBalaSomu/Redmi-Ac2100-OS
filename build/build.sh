@@ -83,7 +83,7 @@ PACKAGES_ADD=" \
   uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
   libubus libblobmsg-json jq curl ca-bundle ca-certificates \
   nlbwmon luci-lib-nixio \
-  kmod-nft-offload bridger kmod-nft-nat \
+  kmod-nft-offload kmod-crypto-hw-eip93 kmod-crypto-authenc kmod-crypto-cmac kmod-crypto-ccm kmod-crypto-gcm kmod-crypto-sha256 kmod-crypto-hmac kmod-crypto-ecdh bridger kmod-nft-nat \
   kmod-ipt-conntrack kmod-ipt-raw kmod-nf-conntrack-netlink \
   kmod-sched-cake \
   kmod-tun kmod-wireguard wireguard-tools \

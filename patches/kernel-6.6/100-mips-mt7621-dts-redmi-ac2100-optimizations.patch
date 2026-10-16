@@ -1,12 +1,36 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 09:45:00 +0600
+Subject: [PATCH 100/104] mips: mt7621: dts: unlock 0x4da8 EEPROM, EIP-93 HW crypto engine, HSDMA/GDMA & disable PCIe ASPM
+
+Unlocks all dormant silicon blocks on the Xiaomi Redmi Router AC2100 (MT7621AT):
+  1. Expands `eeprom_factory_8000` to full `0x4da8` (19,880 bytes) so MT7615N
+     retains its factory 4x4 eBF/iBF and per-rate power calibration table.
+  2. Explicitly enables `crypto@1e004000` (`inside-secure,safexcel-eip93ies`),
+     `gdma@2800`, and `hsdma@7000` so `kmod-crypto-hw-eip93` and high-speed DMA
+     accelerate AES-128/256 (CBC/CTR/GCM-base) and SHA-256/HMAC in hardware.
+  3. Disables PCIe L0s/L1 ASPM on `pcie0` (MT7615N) and `pcie1` (MT7603EN).
+
 --- a/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
 +++ b/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
-@@ -5,28 +5,36 @@
+@@ -5,28 +5,40 @@
  /* override EEPROM size to 0x4da8 for MT7615 */
  &eeprom_factory_8000 {
  	reg = <0x8000 0x4da8>;
  };
  
 +&wdt {
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&gdma {
++	status = "okay";
++};
++
++&hsdma {
 +	status = "okay";
 +};
 +
