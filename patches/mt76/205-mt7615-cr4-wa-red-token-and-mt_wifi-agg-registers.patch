@@ -1,0 +1,14 @@
+--- a/mt7615/mac.c
++++ b/mt7615/mac.c
+@@ -1280,6 +1280,14 @@ void mt7615_mac_set_rates(struct mt7615_phy *phy, struct mt7615_sta *sta,
+ 	mt7615_mcu_set_rates(phy, sta, probe_rate, rates);
+ }
+ 
++/* Ported from MediaTek closed-source mt_wifi v5.0.5.0 (DIR-882 / RT-AC85P):
++ * Disable hardware RTS fallback on A-MPDU subframes in MT_AGG_ACR so normal
++ * single-retry subframes do not collapse 2x2/4x4 A-MPDU bursts to legacy RTS */
++void mt7615_mac_init_mt_wifi_agg_boost(struct mt7615_dev *dev)
++{
++	mt76_clear(dev, MT_AGG_ACR(0), MT_AGG_ACR_RTS_FAIL_PKT_LIMIT_EN);
++	mt76_clear(dev, MT_AGG_ACR(1), MT_AGG_ACR_RTS_FAIL_PKT_LIMIT_EN);
++}

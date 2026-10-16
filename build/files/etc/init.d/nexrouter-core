@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 # ===========================================================================
-# nexrouter-core (v3.8) — Proven 4-VPE SMP, No-Qdisc WAN & Zero-Drop LAN
+# nexrouter-core (v4.0) — Proven 4-VPE SMP, No-Qdisc WAN & Zero-Drop LAN
 # ===========================================================================
 # Combines the empirically verified 584-893 Mbps 4-VPE SMP layout from docs/09
 # with Zero-Drop Laptop LAN healing and 64 MiB ZRAM:
@@ -83,11 +83,13 @@ configure_irqs() {
 	done < /proc/interrupts
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
-		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
-		[ -n "$irq_5g" ]   && set_irq_mask c $irq_5g
-		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask c $irq_pcie
-		log "IRQ affinity (4-VPE): Eth($irq_eth)->CPU0(1), 2.4G($irq_2g)->CPU1(2), 5G($irq_5g $irq_pcie)->CPU2/3(c)"
+		# Per MT7621 Programming Guide p.9-10: GIC requires single-VPE masks (1,2,4,8)!
+		# VPE0(1)=Timer/RPS, VPE1(2)=GMAC Eth, VPE2(4)=MT7615 5GHz, VPE3(8)=MT7603 2.4GHz
+		[ -n "$irq_eth" ]  && set_irq_mask 2 $irq_eth
+		[ -n "$irq_5g" ]   && set_irq_mask 4 $irq_5g
+		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask 4 $irq_pcie
+		[ -n "$irq_2g" ]   && set_irq_mask 8 $irq_2g
+		log "IRQ affinity (MT7621 GIC Single-VPE): Eth($irq_eth)->VPE1(2), 5G($irq_5g $irq_pcie)->VPE2(4), 2.4G($irq_2g)->VPE3(8)"
 	else
 		[ -n "$irq_eth" ]  && set_irq_mask 1 $irq_eth
 		[ -n "$irq_2g" ]   && set_irq_mask 2 $irq_2g
@@ -103,7 +105,7 @@ configure_napi_rps_and_lan_switch() {
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
 		rps_mask_wired="3"
-		rps_mask_wifi="e"
+		rps_mask_wifi="d"
 	else
 		rps_mask_wired="3"
 		rps_mask_wifi="3"
@@ -111,7 +113,7 @@ configure_napi_rps_and_lan_switch() {
 
 	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
 	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '10000' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
-	[ -w /proc/sys/net/core/netdev_budget ] && 		printf '600' > /proc/sys/net/core/netdev_budget 2>/dev/null
+	[ -w /proc/sys/net/core/netdev_budget ] && 		printf '1000' > /proc/sys/net/core/netdev_budget 2>/dev/null
 
 	for netdev in /sys/class/net/*; do
 		d="$(basename "$netdev")"
@@ -238,7 +240,7 @@ verify_offload() {
 }
 
 start() {
-	log "Applying NexRouter v3.8 4-VPE SMP & No-Qdisc WAN Fastpath (VPEs=$VPE_COUNT)"
+	log "Applying NexRouter v4.0 4-VPE SMP & No-Qdisc WAN Fastpath (VPEs=$VPE_COUNT)"
 	configure_zram_virtual_ram
 	configure_irqs
 	configure_napi_rps_and_lan_switch
