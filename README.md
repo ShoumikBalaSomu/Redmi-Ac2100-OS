@@ -1,12 +1,12 @@
-# NexRouter v5.0.0 — AX1800 Wi-Fi 6 Hybrid, Hardware WPA3 & Closed-Source Reverse-Engineered Edition — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
+# NexRouter v5.1.0 — Verified Edition: Pre-extracted Argon Theme, LuCI File Manager & Silicon Peak (Redmi-AC2100-OS)
 
 [Open In Colab](https://www.google.com/search?q=https%3A%2F%2Fcolab.research.google.com%2Fgithub%2FShoumikBalaSomu%2FRedmi-Ac2100-OS%2Fblob%2Fmain%2Fcolab%2FNexRouter_OpenWrt_Builder.ipynb)
 
 Custom Kernel 6.6/6.18, `mt76` Wireless Driver, Wi-Fi 6 MAC Backport Stack, and On-Router AI-RF Contextual Bandit OS for the **Xiaomi Redmi Router AC2100** (`RM2100`), engineered to extract maximum speed, memory, and range **from your existing stock hardware (zero physical soldering required)**.
 
-## 0. NexRouter v5.0.0 Apex Peak Edition Architecture & Key Innovations
+## 0. NexRouter v5.1.0 Verified Edition Architecture & Key Innovations
 
-NexRouter OS v5.0.0 pushes the Xiaomi Redmi Router AC2100's physical silicon to its maximum theoretical limits:
+NexRouter OS v5.1.0 pushes the Xiaomi Redmi Router AC2100's physical silicon to its maximum theoretical limits:
 
 ### 1. 1.2 Gbps TRGMII Switch Trunk & Enhanced Device Tree
 - **1.2G TRGMII Switch Trunk**: Overclocked internal TRGMII interface between MT7621AT SoC and MT7530 switch from 1.0 Gbps to 1.2 Gbps, eliminating switch-to-CPU bottlenecks under full-duplex line-rate throughput.
