@@ -24,7 +24,7 @@ apply_mt7603_and_mt7615_registers() {
 		[ -d "$phy/mt76" ] || continue
 		[ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] || continue
 
-		if [ ! -d "$phy/mt76/dbdc" ]; then
+		if [ ! -e "$phy/mt76/dbdc" ]; then
 			# MT7603EN (2.4 GHz, PCIe1):
 			# Unlock Qorvo QPF4200 +5V external Wi-Fi 6 LNA gain (15.5 dB, 2.1 dB NF)
 			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
@@ -141,7 +141,7 @@ dump_silicon_status() {
 	echo "=== NexRouter v5.0.0 Apex Silicon Register & Offload Audit ==="
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy/mt76" ] || continue
-		if [ -d "$phy/mt76/dbdc" ]; then
+		if [ -e "$phy/mt76/dbdc" ]; then
 			printf '0x4208\n' > "$phy/mt76/regidx" 2>/dev/null; glo="$(cat "$phy/mt76/regval" 2>/dev/null)"
 			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null; dint="$(cat "$phy/mt76/regval" 2>/dev/null)"
 			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null; acr="$(cat "$phy/mt76/regval" 2>/dev/null)"
