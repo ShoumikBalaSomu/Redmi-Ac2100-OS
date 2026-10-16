@@ -2,9 +2,6 @@
 # ===========================================================================
 # 20-rrm-neighbor-sync — Dynamic 802.11k RRM Neighbor Synchronization
 # ===========================================================================
-# Fixes v1 Noop #4: Never hardcode unit-specific BSSIDs (9c:9d:7e:18:c4:56).
-# Queries live BSSID, SSID, and RRM neighbor strings directly from hostapd ubus.
-
 [ "$ACTION" = "add" ] || [ "$ACTION" = "ifup" ] || [ -z "$ACTION" ] || exit 0
 
 sync_rrm() {
@@ -31,10 +28,10 @@ sync_rrm() {
 	done
 
 	if [ -n "$obj_5g" ] && [ -n "$bssid_2g" ] && [ -n "$nr_2g" ]; then
-		ubus call "$obj_5g" rrm_nr_set "{"list":[["$bssid_2g","$ssid_2g","$nr_2g"]]}" 2>/dev/null
+		ubus call "$obj_5g" rrm_nr_set "{\"list\":[[\"$bssid_2g\",\"$ssid_2g\",\"$nr_2g\"]]}" 2>/dev/null || true
 	fi
 	if [ -n "$obj_2g" ] && [ -n "$bssid_5g" ] && [ -n "$nr_5g" ]; then
-		ubus call "$obj_2g" rrm_nr_set "{"list":[["$bssid_5g","$ssid_5g","$nr_5g"]]}" 2>/dev/null
+		ubus call "$obj_2g" rrm_nr_set "{\"list\":[[\"$bssid_5g\",\"$ssid_5g\",\"$nr_5g\"]]}" 2>/dev/null || true
 	fi
 }
 

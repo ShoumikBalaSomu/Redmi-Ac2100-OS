@@ -1,15 +1,13 @@
 #!/bin/sh
 # ===========================================================================
-# NexRouter v3.7 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller
+# NexRouter v5.1 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller
 # ===========================================================================
-# Key v3.7 Fixes for Wireless Download Speed (600-850+ Mbps on 5 GHz):
+# Key Fixes for Wireless Download Speed (600-850+ Mbps on 5 GHz):
 #   1. Edge-Triggered `nl80211` / MCU Updates (Zero TX Queue Stalls):
-#      Previously, calling `iw dev set txpower` and `iw phy set rts` every 3s
-#      acquired the kernel `wiphy_lock` and paused the MT7615N Andes N9 MCU TX
-#      aggregation rings 3-4 times during a 10-second Speedtest! Now `iw` and
-#      `hostapd` calls execute ONLY when a state transition actually occurs.
-#   2. Unthrottled A-MPDU Download Windows (`aql_txq_limit` 16,000-24,000 us)
-#      and RTS disabled (`2347`) across Near and Mid-Range Beamforming regimes.
+#      Executes `iw` and `hostapd` calls ONLY when a state transition occurs,
+#      never interrupting active 10-second Speedtest A-MPDU aggregation bursts.
+#   2. Sweet-Spot 5000/10000 us AQL Window (`aql_threshold=24000`) & RTS=2347.
+#   3. Validated JSON generation for `ubus call hostapd.*` and `farlink_status.json`.
 # ===========================================================================
 
 STATE_FILE="/var/run/nexrouter/farlink_status.json"
@@ -19,7 +17,6 @@ STA_WEIGHT_CACHE="/var/run/nexrouter/sta_weights.cache"
 mkdir -p /var/run/nexrouter
 : > "$STA_WEIGHT_CACHE"
 
-# Reset legacy throttled bandit arms if upgrading from v3.0-v3.4
 if [ ! -s "$BANDIT_STATE" ] || grep -qE '	(2500	1536|24000	2347)	' "$BANDIT_STATE" 2>/dev/null; then
 	cat << 'BEOF' > "$BANDIT_STATE"
 0	PEAK_AGGREGATION_1733M	5000	2347	1	85000
@@ -48,7 +45,6 @@ sync_rrm_neighbors() {
 	local if_2g="$1" if_5g="$2" now
 	[ -n "$if_2g" ] && [ -n "$if_5g" ] || return 0
 	now="$(date +%s)"
-	# Sync RRM neighbor reports once every 60s instead of every 3s
 	[ $((now - LAST_RRM_SYNC)) -lt 60 ] && return 0
 	LAST_RRM_SYNC="$now"
 
@@ -61,10 +57,10 @@ sync_rrm_neighbors() {
 	ssid_5g="$(ubus call "hostapd.$if_5g" rrm_nr_get_own 2>/dev/null | jq -r '.value[1] // "NexRouter_5G"' 2>/dev/null)"
 
 	if [ -n "$bssid_2g" ] && [ -n "$nr_2g" ]; then
-		ubus call "hostapd.$if_5g" rrm_nr_set "{"list":[["$bssid_2g","$ssid_2g","$nr_2g"]]}" 2>/dev/null
+		ubus call "hostapd.$if_5g" rrm_nr_set "{\"list\":[[\"$bssid_2g\",\"$ssid_2g\",\"$nr_2g\"]]}" 2>/dev/null || true
 	fi
 	if [ -n "$bssid_5g" ] && [ -n "$nr_5g" ]; then
-		ubus call "hostapd.$if_2g" rrm_nr_set "{"list":[["$bssid_5g","$ssid_5g","$nr_5g"]]}" 2>/dev/null
+		ubus call "hostapd.$if_2g" rrm_nr_set "{\"list\":[[\"$bssid_5g\",\"$ssid_5g\",\"$nr_5g\"]]}" 2>/dev/null || true
 	fi
 }
 
@@ -80,25 +76,19 @@ apply_radio_arm_and_obss_pd() {
 		for phy in /sys/kernel/debug/ieee80211/phy*; do
 			[ -d "$phy" ] || continue
 			if [ "$aql_us" != "$LAST_APPLIED_AQL" ] && [ -w "$phy/aql_txq_limit" ]; then
-				printf '0 4000 8000
-' > "$phy/aql_txq_limit" 2>/dev/null || true
-				printf '1 8000 16000
-' > "$phy/aql_txq_limit" 2>/dev/null || true
-				printf '2 %s %s
-' "$aql_us" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
-				printf '3 %s %s
-' "$aql_us" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
+				printf '0 2500 5000\n' > "$phy/aql_txq_limit" 2>/dev/null || true
+				printf '1 4000 8000\n' > "$phy/aql_txq_limit" 2>/dev/null || true
+				printf '2 %s %s\n' "$aql_us" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
+				printf '3 %s %s\n' "$aql_us" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
 			fi
 			if [ "$cca_ed_dbm" != "$LAST_APPLIED_CCA" ] && [ -w "$phy/mt76/scs_threshold" ]; then
-				printf '%s
-' "$cca_ed_dbm" > "$phy/mt76/scs_threshold" 2>/dev/null || true
+				printf '%s\n' "$cca_ed_dbm" > "$phy/mt76/scs_threshold" 2>/dev/null || true
 			fi
 		done
 		LAST_APPLIED_AQL="$aql_us"
 		LAST_APPLIED_CCA="$cca_ed_dbm"
 	fi
 
-	# Edge-triggered RTS update: NEVER call `iw phy set rts` unless RTS changed!
 	if [ "$rts_b" != "$LAST_APPLIED_RTS" ]; then
 		for phy_name in phy0 phy1; do
 			iw phy "$phy_name" set rts "$rts_b" 2>/dev/null || true
@@ -108,7 +98,6 @@ apply_radio_arm_and_obss_pd() {
 }
 
 LAST_THERM_STATE=""
-# Edge-triggered thermal guard: only calls `iw dev set txpower` when crossing 78°C / 73°C hysteresis!
 check_thermal_guard() {
 	local if_5g="$1" if_2g="$2" tz v temp_c=52 new_state
 	for tz in /sys/class/hwmon/hwmon*/temp*_input /sys/class/thermal/thermal_zone*/temp; do
@@ -145,10 +134,9 @@ update_sta_airtime_if_changed() {
 	prev_w="$(grep "^${iface}:${mac}=" "$STA_WEIGHT_CACHE" 2>/dev/null | cut -d= -f2)"
 	[ "$prev_w" = "$weight" ] && return 0
 	grep -v "^${iface}:${mac}=" "$STA_WEIGHT_CACHE" > "$STA_WEIGHT_CACHE.tmp" 2>/dev/null || true
-	printf '%s:%s=%s
-' "$iface" "$mac" "$weight" >> "$STA_WEIGHT_CACHE.tmp"
+	printf '%s:%s=%s\n' "$iface" "$mac" "$weight" >> "$STA_WEIGHT_CACHE.tmp"
 	mv -f "$STA_WEIGHT_CACHE.tmp" "$STA_WEIGHT_CACHE"
-	ubus call "hostapd.$iface" update_airtime "{"sta":"$mac","weight":$weight}" 2>/dev/null || true
+	ubus call "hostapd.$iface" update_airtime "{\"sta\":\"$mac\",\"weight\":$weight}" 2>/dev/null || true
 }
 
 ACTIVE_ARM=0
@@ -204,8 +192,7 @@ while :; do
 		sta_dump="$(iw dev "$iface" station dump 2>/dev/null)"
 		[ -n "$sta_dump" ] || continue
 
-		parsed_stas="$(printf '%s
-' "$sta_dump" | awk '
+		parsed_stas="$(printf '%s\n' "$sta_dump" | awk '
 			/^Station/ { if (mac != "") print mac "," sig "," txp "," txr "," tp; mac=$2; sig=-50; txp=1; txr=0; tp="0" }
 			/signal avg:/ { sig=$3+0 }
 			/tx packets:/ { txp=$3+0 }
@@ -239,7 +226,7 @@ while :; do
 					action="802.11r/v-FastSteer-2.4G+MaxATF"
 					nr_2g="$( [ -n "$if_2g" ] && ubus call "hostapd.$if_2g" rrm_nr_get_own 2>/dev/null | jq -r '.value[2] // empty' 2>/dev/null )"
 					if [ -n "$nr_2g" ]; then
-						ubus call "hostapd.$if_5g" bss_transition_request 							"{"addr":"$mac","disassociation_imminent":false,"disassociation_timer":0,"validity_period":30,"neighbors":["$nr_2g"],"abridged":1}" 2>/dev/null
+						ubus call "hostapd.$if_5g" bss_transition_request "{\"addr\":\"$mac\",\"disassociation_imminent\":false,\"disassociation_timer\":0,\"validity_period\":30,\"neighbors\":[\"$nr_2g\"],\"abridged\":1}" 2>/dev/null || true
 					fi
 				elif [ "$sig" -le "$rssi_mid" ]; then
 					regime="FAR_WALLBREAKER"
@@ -248,7 +235,7 @@ while :; do
 				elif [ "$sig" -le "$rssi_near" ]; then
 					regime="MID_BEAMFORM"
 					weight=320
-					action="4x4-eBF/iBF+24ms-AQL-NoRTS"
+					action="4x4-eBF/iBF+5ms-AQL-NoRTS"
 				fi
 				update_sta_airtime_if_changed "$if_5g" "$mac" "$weight"
 			else
@@ -258,7 +245,7 @@ while :; do
 					action="802.11r/v-FastUpgrade-5G-1733M"
 					nr_5g="$( [ -n "$if_5g" ] && ubus call "hostapd.$if_5g" rrm_nr_get_own 2>/dev/null | jq -r '.value[2] // empty' 2>/dev/null )"
 					if [ -n "$nr_5g" ]; then
-						ubus call "hostapd.$if_2g" bss_transition_request 							"{"addr":"$mac","disassociation_imminent":false,"disassociation_timer":0,"validity_period":30,"neighbors":["$nr_5g"],"abridged":1}" 2>/dev/null
+						ubus call "hostapd.$if_2g" bss_transition_request "{\"addr\":\"$mac\",\"disassociation_imminent\":false,\"disassociation_timer\":0,\"validity_period\":30,\"neighbors\":[\"$nr_5g\"],\"abridged\":1}" 2>/dev/null || true
 					fi
 				elif [ "$sig" -le -75 ]; then
 					regime="LONG_RANGE_2G"
@@ -272,7 +259,7 @@ while :; do
 				update_sta_airtime_if_changed "$if_2g" "$mac" "$weight"
 			fi
 
-			sta_entry="{"mac":"$mac","band":"$band_label","rssi":$sig,"retry_pct":$retry_pct,"expected_mbps":${tp:-0},"regime":"$regime","airtime_weight":$weight,"ai_action":"$action"}"
+			sta_entry="{\"mac\":\"$mac\",\"band\":\"$band_label\",\"rssi\":$sig,\"retry_pct\":$retry_pct,\"expected_mbps\":${tp:-0},\"regime\":\"$regime\",\"airtime_weight\":$weight,\"ai_action\":\"$action\"}"
 			sta_json_list="${sta_json_list}${sta_json_list:+,}${sta_entry}"
 		done
 	done
@@ -291,8 +278,8 @@ while :; do
 	fi
 
 	if [ "$ai_bandit" = "1" ]; then
-		bandit_out="$(awk -v cur_arm="$ACTIVE_ARM" 		                  -v wrssi="$worst_rssi" 		                  -v retry="$avg_retry_pct" 		                  -v kbps="$tput_kbps" '
-		BEGIN { FS="	"; OFS="	"; tot_pulls = 0 }
+		bandit_out="$(awk -v cur_arm="$ACTIVE_ARM" -v wrssi="$worst_rssi" -v retry="$avg_retry_pct" -v kbps="$tput_kbps" '
+		BEGIN { FS="\t"; OFS="\t"; tot_pulls = 0 }
 		{
 			id[NR] = $1 + 0; name[NR] = $2; aql[NR] = $3 + 0; rts[NR] = $4 + 0
 			pulls[NR] = $5 + 0; reward[NR] = $6 + 0
@@ -321,11 +308,9 @@ while :; do
 					best_score = score; best_id = id[i]
 					best_name = name[i]; best_aql = aql[i]; best_rts = rts[i]
 				}
-				printf "%d	%s	%d	%d	%d	%d
-", id[i], name[i], aql[i], rts[i], pulls[i], reward[i] > "'"$BANDIT_STATE.new"'"
+				printf "%d\t%s\t%d\t%d\t%d\t%d\n", id[i], name[i], aql[i], rts[i], pulls[i], reward[i] > "'"$BANDIT_STATE.new"'"
 			}
-			printf "%d|%s|%d|%d|%d
-", best_id, best_name, best_aql, best_rts, best_score
+			printf "%d|%s|%d|%d|%d\n", best_id, best_name, best_aql, best_rts, best_score
 		}' "$BANDIT_STATE" 2>/dev/null)"
 
 		[ -s "$BANDIT_STATE.new" ] && mv -f "$BANDIT_STATE.new" "$BANDIT_STATE"
@@ -342,10 +327,10 @@ while :; do
 
 	cat <<SEOF > "$STATE_FILE"
 {
-  "engine": "NexRouter v3.7 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller",
+  "engine": "NexRouter v5.1 AI-RF, Gigabit Download & Edge-Triggered Thermal Controller",
   "status": "running",
   "timestamp": $(date +%s),
-  "algorithm": "Edge-Triggered UCB1 Bandit + 24ms AQL Aggregation + Core 1 L1 Fastpath",
+  "algorithm": "Edge-Triggered UCB1 Bandit + 5ms AQL Aggregation + Core 1 L1 Fastpath",
   "active_arm_id": ${ACTIVE_ARM:-0},
   "active_profile": "${ACTIVE_ARM_NAME:-PEAK_AGGREGATION_1733M}",
   "aql_txq_limit_us": ${ACTIVE_AQL:-5000},
@@ -366,7 +351,7 @@ while :; do
   },
   "phy_capabilities": {
     "5ghz_max_phy_mbps": 1733,
-    "5ghz_features": "4x4 VHT80 MCS9, 11454B MPDU, 24ms AQL 64-MPDU Burst, Core1 L1 Fastpath, 26 dBm iPA",
+    "5ghz_features": "4x4 VHT80 MCS9, Hardware WPA3 WTBL, WPDMA 0x4210 IRQ Coalesce, 26 dBm iPA",
     "2ghz_max_phy_mbps": 400,
     "2ghz_features": "2x2 HT40 256-QAM TurboQAM, 2x Qorvo QPF4200 +5V FEMs (15.5dB LNA), -98 dBm CCA"
   },

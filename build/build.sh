@@ -289,7 +289,7 @@ fi
 # silently does nothing.
 echo "==> normalising executable bits"
 find "$FILES" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
-  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' \) -exec chmod 0755 {} +
+  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' -o -path '*/rpcd/*' \) -exec chmod 0755 {} +
 find "$FILES" -type f -path '*/config/*' -exec chmod 0644 {} +
 
 # Record build provenance inside the image so it is self-identifying.

@@ -50,6 +50,12 @@
         ],
         "luci-rpc": [
           "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
+          "*"
         ]
       },
       "file": {
@@ -100,6 +106,12 @@
         ],
         "nlbwmon": [
           "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
+          "*"
         ]
       },
       "file": {
@@ -126,6 +138,12 @@
         ],
         "file": [
           "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
+          "*"
         ]
       },
       "file": {
@@ -151,6 +169,12 @@
           "*"
         ],
         "file": [
+          "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
           "*"
         ]
       },
@@ -292,6 +316,12 @@
         ],
         "luci-rpc": [
           "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
+          "*"
         ]
       },
       "file": {
@@ -341,6 +371,12 @@
           "*"
         ],
         "nlbwmon": [
+          "*"
+        ],
+        "luci.argon": [
+          "*"
+        ],
+        "luci.argon_wallpaper": [
           "*"
         ]
       },

@@ -75,9 +75,15 @@ if uci -q get rpcd.@login[0] >/dev/null 2>&1; then
 		add_list rpcd.@login[0].read='*'
 		add_list rpcd.@login[0].read='unauthenticated'
 		add_list rpcd.@login[0].read='nexrouter-admin'
+		add_list rpcd.@login[0].read='luci-theme-argon'
+		add_list rpcd.@login[0].read='luci-app-argon-config'
+		add_list rpcd.@login[0].read='luci-app-filemanager'
 		add_list rpcd.@login[0].write='*'
 		add_list rpcd.@login[0].write='unauthenticated'
 		add_list rpcd.@login[0].write='nexrouter-admin'
+		add_list rpcd.@login[0].write='luci-theme-argon'
+		add_list rpcd.@login[0].write='luci-app-argon-config'
+		add_list rpcd.@login[0].write='luci-app-filemanager'
 		commit rpcd
 	EOF
 fi
@@ -92,6 +98,7 @@ EOF
 
 if uci -q get luci.main >/dev/null 2>&1; then
 	uci -q batch <<-EOF
+		set luci.themes.Argon='/luci-static/argon'
 		set luci.main.mediaurlbase='/luci-static/argon'
 		set luci.main.lang='en'
 		commit luci

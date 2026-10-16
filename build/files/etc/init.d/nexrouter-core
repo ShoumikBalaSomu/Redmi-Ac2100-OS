@@ -186,25 +186,18 @@ configure_wifi_lowlevel() {
 
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy" ] || continue
-		[ -w "$phy/aql_threshold" ] && printf '%s
-' "$aql_thr" > "$phy/aql_threshold" 2>/dev/null || true
+		[ -w "$phy/aql_threshold" ] && printf '%s\n' "$aql_thr" > "$phy/aql_threshold" 2>/dev/null || true
 		if [ -w "$phy/aql_txq_limit" ]; then
-			printf '0 2500 5000
-' > "$phy/aql_txq_limit" 2>/dev/null || true
-			printf '1 4000 8000
-' > "$phy/aql_txq_limit" 2>/dev/null || true
-			printf '2 %s %s
-' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
-			printf '3 %s %s
-' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
+			printf '0 2500 5000\n' > "$phy/aql_txq_limit" 2>/dev/null || true
+			printf '1 4000 8000\n' > "$phy/aql_txq_limit" 2>/dev/null || true
+			printf '2 %s %s\n' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
+			printf '3 %s %s\n' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
 		fi
 		[ -w "$phy/aql_enable" ] && printf '1' > "$phy/aql_enable" 2>/dev/null || true
 
 		if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] && [ ! -d "$phy/mt76/dbdc" ]; then
-			printf '0x10f18
-' > "$phy/mt76/regidx" 2>/dev/null || true
-			printf '0x00000012
-' > "$phy/mt76/regval" 2>/dev/null || true
+			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
 		fi
 	done
 

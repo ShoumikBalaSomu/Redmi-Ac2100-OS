@@ -77,7 +77,7 @@ cp -a "$ROOT/build/files/." "$SRC_DIR/files/"
 cp -a "$ROOT/webui/dist/." "$SRC_DIR/files/www/nex/"
 
 find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
-  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' \) -exec chmod 0755 {} +
+  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' -o -path '*/rpcd/*' \) -exec chmod 0755 {} +
 
 echo "==> Generating .config for Xiaomi Redmi Router AC2100 (ramips/mt7621)"
 cat > "$SRC_DIR/.config" <<'EOF'
