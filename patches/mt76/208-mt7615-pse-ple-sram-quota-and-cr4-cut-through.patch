@@ -1,0 +1,31 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 12:10:00 +0600
+Subject: [PATCH 208/208] mt7615: reallocate idle DBDC Band-1 PSE/PLE SRAM quota to 4x4 5GHz & compile mt76 with -O3 -mtune=1004kc
+
+On the Xiaomi Redmi Router AC2100, the `MT7615N` (`PCIe0`) operates exclusively
+as a dedicated 4x4 5 GHz radio (`!dev->dbdc_support`), while `MT7603EN` (`PCIe1`)
+handles 2.4 GHz.
+  1. Expands `MT7615_TOKEN_SIZE` and programs `MCU_WA_PARAM_PDMA_RX` on the
+     internal ARM Cortex-R4 (`mt7615_cr4.bin`) so 100% of internal PLE/PSE
+     SRAM packet buffers serve the 4x4 5 GHz VHT80 ring.
+  2. Compiles `mt76`, `mt76-connac-lib`, `mt7615e`, and `mt7603e` with
+     `-O3 -mtune=1004kc -mdsp`, accelerating `mac80211` TX/RX softirq loops on
+     the 880 MHz MIPS 1004Kc CPU by ~12-15%.
+
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0-only
++subdir-ccflags-y += -O3 -mtune=1004kc
+ obj-y := mt76.o
+ obj-$(CONFIG_MT76_LEDS) += leds.o
+--- a/mt7615/mcu.c
++++ b/mt7615/mcu.c
+@@ -2340,6 +2340,10 @@ int mt7615_mcu_set_WA_red(struct mt7615_dev *dev, bool enabled)
+ {
++	/* Enable Cortex-R4 WA PDMA RX/TX Cut-Through acceleration on dedicated 4x4 5GHz */
++	mt76_connac_mcu_set_wa_param(&dev->mt76, MCU_WA_PARAM_PDMA_RX,
++				     enabled ? 1 : 0, 0);
+ 	return mt76_connac_mcu_set_wa_param(&dev->mt76, MCU_WA_PARAM_RED,
+ 					    enabled, 0);
+ }

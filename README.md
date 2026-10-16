@@ -1,4 +1,4 @@
-# NexRouter v4.4.0 — AX1800 Wi-Fi 6 Hybrid, Hardware WPA3 & Closed-Source Reverse-Engineered Edition — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
+# NexRouter v5.0.0 — AX1800 Wi-Fi 6 Hybrid, Hardware WPA3 & Closed-Source Reverse-Engineered Edition — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
 
 [Open In Colab](https://www.google.com/search?q=https%3A%2F%2Fcolab.research.google.com%2Fgithub%2FShoumikBalaSomu%2FRedmi-Ac2100-OS%2Fblob%2Fmain%2Fcolab%2FNexRouter_OpenWrt_Builder.ipynb)
 

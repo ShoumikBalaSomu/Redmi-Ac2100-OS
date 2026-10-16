@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# NexRouter v3.6 Full Source Builder (OpenWrt Snapshot / 24.10 + Custom Patches)
+# NexRouter v5.0.0 Apex Full Source Builder (OpenWrt Snapshot / 24.10 + All 14 Custom Patches)
 # ===========================================================================
-# Compiles OpenWrt from source with NexRouter's custom kernel, DTS, MT7530 DSA,
-# and mt76 wireless patches:
-#   - patches/kernel-6.6/100-mips-mt7621-dts-redmi-ac2100-optimizations.patch
-#   - patches/kernel-6.6/101-net-mtk_eth_soc-ppe-wed-bridge-fastpath-and-dma-512.patch
-#   - patches/kernel-6.6/102-mips-mt7621-cpu-bus-prefetch-and-unaligned-fastpath.patch
-#   - patches/kernel-6.6/103-net-dsa-mt7530-disable-eee-lpi-laptop-linkflap-fix.patch
-#   - patches/mt76/200-mt7615-mt7603-threaded-napi-and-dma-tx-rx-boost.patch
-#   - patches/mt76/201-mt7615-full-4x4-txbf-mumimo-and-11454-mpdu.patch
-#   - patches/mt76/202-mt7603-256qam-vht24g-and-long-range-cca-sensitivity.patch
-#   - patches/mt76/203-mt76-eeprom-max-txpower-and-pa-lna-calibration-unlock.patch
+# Compiles OpenWrt from source with NexRouter's custom Kernel, DTS, TRGMII 1.2G,
+# MIPS 1004Kc DSP, EIP-93 Crypto, MT7530 DSA, and mt76 wireless/MCU patches:
+#   Kernel Patches (`patches/kernel-6.6/`):
+#     - 100-mips-mt7621-dts-redmi-ac2100-optimizations.patch (1.2G TRGMII + 0x4da8 + EIP-93 + HSDMA)
+#     - 101-net-mtk_eth_soc-ppe-wed-bridge-fastpath-and-dma-512.patch (512 DMA rings + 16K PPE flows)
+#     - 102-mips-mt7621-cpu-bus-prefetch-and-unaligned-fastpath.patch (DDR3 burst prefetch + -O3 net/core)
+#     - 103-net-dsa-mt7530-disable-eee-lpi-laptop-linkflap-fix.patch (Zero-drop laptop LAN EEE disable)
+#     - 104-net-mtk_eth_soc-napi-weight-256-anti-vpe-starvation.patch (NAPI 256 + NF_FLOW_XMIT_NEIGH)
+#     - 105-pci-mt7621-pcie-rc-mps256-fts-and-cpc-coherency.patch (PCIe N_FTS=0x50 + DDR3 write-coalesce)
+#     - 106-mips-mt7621-1004kc-dsp-l2-cca-and-network-fastpath.patch (-O3 -mtune=1004kc -mdsp hotpaths)
+#   Wireless `mt76` Patches (`patches/mt76/`):
+#     - 200-mt7615-mt7603-threaded-napi-and-dma-tx-rx-boost.patch (2048 TX / 1024 RX rings + Threaded NAPI)
+#     - 201-mt7615-full-4x4-txbf-mumimo-and-11454-mpdu.patch (Port MT7915 STA_REC_BF 0x02 PFMU TLV)
+#     - 202-mt7603-256qam-vht24g-and-long-range-cca-sensitivity.patch (Padavan ED-CCA fix + 0x0f2 6dBm fix + QPF4200)
+#     - 203-mt76-eeprom-max-txpower-and-pa-lna-calibration-unlock.patch (26 dBm 5G / 23 dBm 2.4G calibration unlock)
+#     - 204-mt7615-vht80p80-160mhz-mcu-chan2-support.patch (VHT80P80 80+80 MHz chan2 MCU support)
+#     - 205-mt7615-cr4-wa-red-token-and-mt_wifi-agg-registers.patch (MT_AGG_ACR 0x21210 + #1009 TXQ wake kick)
+#     - 206-mt7615-mt7915-wifi6-8023-hw-encap-and-hw-wpa3-wtbl.patch (Wi-Fi 6 802.3 HW encap + HW WPA3 WTBL)
+#     - 207-mt7615-mt7603-wpdma-burst-delay-int-and-vht160-rc-fix.patch (WPDMA 0x4208 + 0x4210 IRQ coalesce + #465 fix)
+#     - 208-mt7615-pse-ple-sram-quota-and-cr4-cut-through.patch (Cortex-R4 PDMA cut-through + -O3 -mtune=1004kc)
 #
 # Usage:
 #   ./build/build-from-source.sh [--branch main|v24.10.2] [--jobs N] [--config-only]
@@ -27,7 +37,7 @@ while [ $# -gt 0 ]; do
     --branch)      BRANCH="$2"; shift 2 ;;
     --jobs)        JOBS="$2"; shift 2 ;;
     --config-only) CONFIG_ONLY=1; shift ;;
-    -h|--help)     sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -49,13 +59,13 @@ echo "==> Updating and installing OpenWrt feeds"
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-echo "==> Injecting NexRouter Kernel, MT7621 PPE, DDR3 Prefetch & MT7530 LAN patches"
+echo "==> Injecting NexRouter Kernel, TRGMII 1.2G, EIP-93, 1004Kc DSP & MT7530 LAN patches (100-106)"
 for kdir in "$SRC_DIR"/target/linux/ramips/patches-*; do
   [ -d "$kdir" ] || continue
   cp -f "$ROOT/patches/kernel-6.6/"*.patch "$kdir/"
 done
 
-echo "==> Injecting NexRouter mt76 driver patches (1733M 5G + 400M 2.4G + Wi-Fi 6 Backports)"
+echo "==> Injecting NexRouter mt76 driver patches (200-208: STA_REC_BF, HW WPA3, 802.3 Encap, WPDMA Coalesce)"
 mkdir -p "$SRC_DIR/package/kernel/mt76/patches"
 cp -f "$ROOT/patches/mt76/"*.patch "$SRC_DIR/package/kernel/mt76/patches/"
 
@@ -66,7 +76,8 @@ mkdir -p "$SRC_DIR/files/www/nex"
 cp -a "$ROOT/build/files/." "$SRC_DIR/files/"
 cp -a "$ROOT/webui/dist/." "$SRC_DIR/files/www/nex/"
 
-find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*'   -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' \) -exec chmod 0755 {} +
+find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
+  -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' \) -exec chmod 0755 {} +
 
 echo "==> Generating .config for Xiaomi Redmi Router AC2100 (ramips/mt7621)"
 cat > "$SRC_DIR/.config" <<'EOF'
@@ -82,7 +93,16 @@ CONFIG_PACKAGE_kmod-mt7603=y
 CONFIG_PACKAGE_kmod-mt7615e=y
 CONFIG_PACKAGE_kmod-mt7615-firmware=y
 CONFIG_PACKAGE_wpad-mbedtls=y
-CONFIG_PACKAGE_kmod-nft-offload bridger=y
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_bridger=y
+CONFIG_PACKAGE_kmod-crypto-hw-eip93=y
+CONFIG_PACKAGE_kmod-crypto-authenc=y
+CONFIG_PACKAGE_kmod-crypto-cmac=y
+CONFIG_PACKAGE_kmod-crypto-ccm=y
+CONFIG_PACKAGE_kmod-crypto-gcm=y
+CONFIG_PACKAGE_kmod-crypto-sha256=y
+CONFIG_PACKAGE_kmod-crypto-hmac=y
+CONFIG_PACKAGE_kmod-crypto-ecdh=y
 CONFIG_PACKAGE_kmod-tcp-bbr=y
 CONFIG_PACKAGE_kmod-sched-cake=y
 CONFIG_PACKAGE_kmod-wireguard=y

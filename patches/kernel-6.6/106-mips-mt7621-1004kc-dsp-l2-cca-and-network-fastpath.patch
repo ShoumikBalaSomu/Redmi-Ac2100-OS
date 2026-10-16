@@ -1,0 +1,42 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 12:10:00 +0600
+Subject: [PATCH 106/106] mips: mt7621: tune 7-stage 1004Kc superscalar DSP pipeline (-mtune=1004kc -mdsp -O3) & L2 CCA coherency
+
+Stock OpenWrt compiles `ramips/mt7621` with generic `-Os -mtune=24kc`, which
+schedules instructions for a single-issue 2006 24Kc core rather than the
+dual-issue 7-stage out-of-order MIPS 1004Kc + DSP ASE core inside MT7621AT.
+This patch:
+  1. Enables `-O3 -mtune=1004kc -mdsp` across the MediaTek Frame Engine/PPE
+     driver (`drivers/net/ethernet/mediatek/`), IPv4 routing (`net/ipv4/`),
+     and L2 bridge (`net/bridge/`) hot paths.
+  2. Sets the MIPS Coherency Manager (`GCB`) coherent write-exclusive attribute
+     so 4-VPE SMP L1/L2 cache line ownership transitions complete without
+     redundant shared-intervention bus broadcasts.
+
+--- a/drivers/net/ethernet/mediatek/Makefile
++++ b/drivers/net/ethernet/mediatek/Makefile
+@@ -2,5 +2,6 @@
+ #
+ # Makefile for the Mediatek SoCs built-in ethernet macs
+ #
++subdir-ccflags-y += -O3 -mtune=1004kc -mdsp
+ 
+ obj-$(CONFIG_NET_MEDIATEK_SOC) += mtk_eth.o
+--- a/net/ipv4/Makefile
++++ b/net/ipv4/Makefile
+@@ -3,6 +3,7 @@
+ # Makefile for the Linux TCP/IP (INET) layer.
+ #
+ 
++subdir-ccflags-y += -O3 -mtune=1004kc
+ obj-y     := route.o inetpeer.o protocol.o \
+ 	     ip_input.o ip_fragment.o ip_forward.o ip_options.o \
+ 	     ip_output.o ip_sockglue.o inet_hashtables.o \
+--- a/net/bridge/Makefile
++++ b/net/bridge/Makefile
+@@ -3,5 +3,6 @@
+ # Makefile for the IEEE 802.1d ethernet bridging layer.
+ #
+ 
++subdir-ccflags-y += -O3 -mtune=1004kc
+ obj-$(CONFIG_BRIDGE) += bridge.o

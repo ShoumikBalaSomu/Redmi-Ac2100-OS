@@ -1,18 +1,22 @@
 From: NexRouter Engineering <eng@nexrouter.io>
-Date: Fri, 16 Oct 2026 09:45:00 +0600
-Subject: [PATCH 100/104] mips: mt7621: dts: unlock 0x4da8 EEPROM, EIP-93 HW crypto engine, HSDMA/GDMA & disable PCIe ASPM
+Date: Fri, 16 Oct 2026 12:10:00 +0600
+Subject: [PATCH 100/106] mips: mt7621: dts: unlock 1.2Gbps TRGMII switch trunk, 0x4da8 EEPROM, EIP-93 HW crypto & HSDMA
 
-Unlocks all dormant silicon blocks on the Xiaomi Redmi Router AC2100 (MT7621AT):
-  1. Expands `eeprom_factory_8000` to full `0x4da8` (19,880 bytes) so MT7615N
-     retains its factory 4x4 eBF/iBF and per-rate power calibration table.
-  2. Explicitly enables `crypto@1e004000` (`inside-secure,safexcel-eip93ies`),
-     `gdma@2800`, and `hsdma@7000` so `kmod-crypto-hw-eip93` and high-speed DMA
-     accelerate AES-128/256 (CBC/CTR/GCM-base) and SHA-256/HMAC in hardware.
-  3. Disables PCIe L0s/L1 ASPM on `pcie0` (MT7615N) and `pcie1` (MT7603EN).
+Pushes the Xiaomi Redmi Router AC2100 (MT7621AT + MT7530 + MT7615N + MT7603EN)
+Device Tree to its theoretical silicon limits:
+  1. Upgrades `gmac0` <-> `switch0 port@6` from `rgmii` (1.0 Gbps @ 125 MHz) to
+     `trgmii` (1.2 Gbps Turbo RGMII @ 150 MHz DDR), eliminating the 4-byte
+     MediaTek DSA switch tag overhead bottleneck on `lan1`..`lan3` and providing
+     2.2 Gbps combined internal Ethernet bandwidth (1.2G LAN + 1.0G WAN gmac1).
+  2. Expands `eeprom_factory_8000` to full `0x4da8` (19,880 bytes) for MT7615N
+     4x4 eBF/iBF and per-rate power calibration.
+  3. Enables `crypto@1e004000` (Inside Secure EIP-93 hardware crypto engine),
+     `gdma@2800` (16-ch General DMA), and `hsdma@7000` (High-Speed DMA).
+  4. Disables PCIe L0s/L1 ASPM on `pcie0` (MT7615N) and `pcie1` (MT7603EN).
 
 --- a/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
 +++ b/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
-@@ -5,28 +5,40 @@
+@@ -5,33 +5,46 @@
  /* override EEPROM size to 0x4da8 for MT7615 */
  &eeprom_factory_8000 {
  	reg = <0x8000 0x4da8>;
@@ -36,7 +40,6 @@ Unlocks all dormant silicon blocks on the Xiaomi Redmi Router AC2100 (MT7621AT):
 +
  &pcie {
  	status = "okay";
-+	/* Disable PCIe ASPM L0s/L1 to eliminate MT7615N/MT7603E wakeup latency spikes */
 +	linux,pci-probe-only = <0>;
  };
  
@@ -61,3 +64,19 @@ Unlocks all dormant silicon blocks on the Xiaomi Redmi Router AC2100 (MT7621AT):
 +		mediatek,disable-aspm;
  	};
  };
+ 
+ &gmac0 {
+ 	nvmem-cells = <&macaddr_factory_e000>;
+ 	nvmem-cell-names = "mac-address";
++	phy-mode = "trgmii";
+ };
+@@ -52,6 +65,10 @@
+ &switch0 {
+ 	ports {
++		port@6 {
++			phy-mode = "trgmii";
++		};
++
+ 		port@2 {
+ 			status = "okay";
+ 			label = "lan1";

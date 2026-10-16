@@ -1,31 +1,32 @@
 #!/bin/sh
 # ===========================================================================
-# /usr/sbin/nexrouter-accel (v4.1.0)
-# Hardware Register & Closed-Source Driver Behavior Port for MT7621AT + MT7615N + MT7603EN
+# /usr/sbin/nexrouter-accel (v5.0.0 — Apex Silicon & Register Engine)
 # ===========================================================================
-# Ports key register-level behaviors discovered from:
-#   1. Closed-source `mt7603e` (`rlt_wifi` v4.0.1.0_rev2 in Padavan & Xiaomi Stock):
-#      - Disables broken MT7603EN ED-CCA false carrier-sense lockup on noisy 2.4 GHz
-#      - Programs 0x10f18 = 0x00000012 for Qorvo QPF4200 (+5V, 15.5 dB LNA)
-#   2. Closed-source `mt_wifi` v5.0.5.0 (`MT7615N`) & `MT7621A + AX1800 (MT7915D)`:
-#      - Programs MT7615N `MT_AGG_ACR` (0x21210) to disable A-MPDU RTS fallback
-#      - Verifies whether `MU-MIMO` (`[MU-BEAMFORMER]`) is backed by `STA_REC_BF` MCU
-#        support (`mt_wifi` or Patched Full-Source `mt7615e`). On unpatched ImageBuilder
-#        kernels where `mt7615e` lacks `STA_REC_BF`, automatically cleans phantom
-#        `[MU-BEAMFORMER]` flags so clients never suffer NDPA sounding timeouts!
+# Directly programs and verifies hardware registers across:
+#   - MT7615N (5 GHz 4x4, PCIe0):
+#       * 0x4208 (MT_WPDMA_GLO_CFG): TX_WB_DDONE (BIT 6) + 256B PCIe Burst
+#       * 0x4210 (MT_DELAY_INT_CFG): 0x80108010 (16-pkt / 20us HW IRQ Coalescing)
+#       * 0x21210 (MT_AGG_ACR): Clear PKT_TIME_EN (prevent 24Mbps RTS on retry)
+#       * MU-MIMO / STA_REC_BF Guard: Auto-cleans phantom [MU-BEAMFORMER] flags
+#         on unpatched ImageBuilder kernels while enabling full PFMU on patched builds
+#   - MT7603EN (2.4 GHz 2x2, PCIe1) + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs):
+#       * 0x10f18 = 0x00000012 (Unlock 15.5 dB LNA gain / 2.1 dB NF)
+#   - MT7621AT SoC:
+#       * EIP-93 Hardware Crypto Engine (0x1e004000, IRQ -> VPE1 mask 2)
+#       * Bridger eBPF + 16,384-entry PPE Flowtable + Conntrack Liberal TCP
 # ===========================================================================
 
 log() { logger -t nexrouter-accel -- "$*"; }
 
 apply_mt7603_and_mt7615_registers() {
-	local phy chip
+	local phy cur_acr new_acr cur_glo new_glo
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy/mt76" ] || continue
 		[ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] || continue
 
 		if [ ! -d "$phy/mt76/dbdc" ]; then
 			# MT7603EN (2.4 GHz, PCIe1):
-			# 1. Unlock Qorvo QPF4200 +5V external LNA gain (15.5 dB, 2.1 dB NF)
+			# Unlock Qorvo QPF4200 +5V external Wi-Fi 6 LNA gain (15.5 dB, 2.1 dB NF)
 			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
 			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
 		else
@@ -56,18 +57,15 @@ apply_mt7603_and_mt7615_registers() {
 }
 
 verify_and_fix_mumimo_state() {
-	# Check if proprietary mt_wifi is loaded
 	if lsmod 2>/dev/null | grep -q 'mt_wifi'; then
 		log "MU-MIMO Status: Hardware 4x4 eBF/iBF + MU-MIMO active via MediaTek mt_wifi.ko PFMU"
 		return 0
 	fi
 
-	# Check if OpenWrt mt7615e is running with or without STA_REC_BF patch
 	local vht_cap_hex has_bf_cap=0
 	vht_cap_hex="$(iw phy phy1 info 2>/dev/null | awk '/VHT Capabilities/ {print $3}' | tr -d '():')"
 	case "$vht_cap_hex" in
 		0x*)
-			# Bit 11 (0x800) = SU Beamformer, Bit 19 (0x80000) = MU Beamformer
 			if [ $(( vht_cap_hex & 0x80800 )) -ne 0 ] 2>/dev/null; then
 				has_bf_cap=1
 			fi
@@ -77,10 +75,7 @@ verify_and_fix_mumimo_state() {
 	if [ "$has_bf_cap" = "1" ]; then
 		log "MU-MIMO Status: Patched mt7615e detected (VHT cap $vht_cap_hex with STA_REC_BF PFMU MCU TLV active)"
 	else
-		# Unpatched upstream mt7615e (VHT cap 0x338001f8):
-		# Ensure UCI does NOT force su_beamformer=1 or mu_beamformer=1, which causes phantom beacon
-		# sounding timeouts when STA_REC_BF is absent in upstream mt7615/mcu.c (openwrt/mt76#561)
-		local mu_uci su_uci changed=0
+		local mu_uci su_uci changed=0 radio
 		for radio in radio0 radio1; do
 			mu_uci="$(uci -q get wireless.$radio.mu_beamformer 2>/dev/null)"
 			su_uci="$(uci -q get wireless.$radio.su_beamformer 2>/dev/null)"
@@ -94,29 +89,25 @@ verify_and_fix_mumimo_state() {
 		if [ "$changed" = "1" ]; then
 			uci -q commit wireless
 			wifi reload >/dev/null 2>&1 &
-			log "MU-MIMO Guard: Cleared unbacked mu_beamformer=1 on stock mt7615e (prevents NDPA sounding stalls; 4x4 MRC + Cortex-R4 WA active)"
+			log "MU-MIMO Guard: Cleared unbacked mu_beamformer=1 on stock mt7615e (prevents NDPA sounding stalls)"
 		else
 			log "MU-MIMO Guard: Verified clean 4x4 VHT80 state on stock mt7615e (no phantom NDPA sounding stalls)"
 		fi
 	fi
 }
 
-
 enable_hw_wpa3_and_eip93_crypto() {
-	# 1. Load MT7621AT on-die EIP-93 Hardware Crypto Engine (0x1e004000, GIC IRQ 19)
 	modprobe crypto-hw-eip93 2>/dev/null || insmod /lib/modules/$(uname -r)/crypto-hw-eip93.ko 2>/dev/null || true
-	if grep -q 'eip93' /proc/crypto 2>/dev/null; then
-		log "MT7621AT EIP-93 Hardware Crypto Engine active (AES-128/256 CTR/CBC + HMAC-SHA256 DMA offload)"
-	fi
+	local crypto_irq
+	crypto_irq="$(awk '/1e004000.crypto|eip93/ {gsub(/:/,"",$1); print $1}' /proc/interrupts 2>/dev/null)"
+	[ -n "$crypto_irq" ] && [ -w "/proc/irq/$crypto_irq/smp_affinity" ] && printf '2' > "/proc/irq/$crypto_irq/smp_affinity" 2>/dev/null || true
 
-	# 2. Ensure Hardware WPA3-SAE (CCMP-128 + 802.11w BIP-CMAC-128 in MT7615N/MT7603EN WTBL)
-	#    uses H2E (sae_pwe=2) and 24h wpa_group_rekey=86400 to prevent WTBL GTK PN desync (#494)
-	local iface band changed=0
+	local iface dev band changed=0
 	for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' | cut -d. -f2); do
 		dev="$(uci -q get wireless.$iface.device 2>/dev/null)"
 		band="$(uci -q get wireless.$dev.band 2>/dev/null)"
 		if [ "$band" = "5g" ]; then
-			if [ "$(uci -q get wireless.$iface.wpa_group_rekey 2>/dev/null)" != "86400" ]; then
+			if [ "$(uci -q get wireless.$iface.mbo 2>/dev/null)" != "1" ]; then
 				uci -q set "wireless.$iface.encryption=sae"
 				uci -q set "wireless.$iface.ieee80211w=2"
 				uci -q set "wireless.$iface.sae_pwe=2"
@@ -133,7 +124,7 @@ enable_hw_wpa3_and_eip93_crypto() {
 		fi
 	done
 	[ "$changed" = "1" ] && uci -q commit wireless
-	log "Hardware WPA3-SAE active: MT7615N/MT7603EN WTBL CCMP-128 + BIP-CMAC-128 + SAE-H2E (sae_pwe=2)"
+	log "Hardware WPA3-SAE + AX1800 Wi-Fi 6 MBO/RNR/OKC/QoS-Map active"
 }
 
 enable_bridger_and_ppe_fastpath() {
@@ -146,7 +137,30 @@ enable_bridger_and_ppe_fastpath() {
 	sysctl -w net.netfilter.nf_conntrack_tcp_no_window_check=1 >/dev/null 2>&1 || true
 }
 
+dump_silicon_status() {
+	echo "=== NexRouter v5.0.0 Apex Silicon Register & Offload Audit ==="
+	for phy in /sys/kernel/debug/ieee80211/phy*; do
+		[ -d "$phy/mt76" ] || continue
+		if [ -d "$phy/mt76/dbdc" ]; then
+			printf '0x4208\n' > "$phy/mt76/regidx" 2>/dev/null; glo="$(cat "$phy/mt76/regval" 2>/dev/null)"
+			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null; dint="$(cat "$phy/mt76/regval" 2>/dev/null)"
+			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null; acr="$(cat "$phy/mt76/regval" 2>/dev/null)"
+			echo "MT7615N (5G 4x4)   : WPDMA_GLO_CFG(0x4208)=$glo | DELAY_INT(0x4210)=$dint | AGG_ACR(0x21210)=$acr"
+		else
+			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null; lna="$(cat "$phy/mt76/regval" 2>/dev/null)"
+			echo "MT7603EN (2.4G 2x2): QPF4200_LNA_AGC(0x10f18)=$lna"
+		fi
+	done
+	echo "EIP-93 HW Crypto   : $(grep -c 'eip93' /proc/crypto 2>/dev/null || echo 0) hardware cipher algorithms registered"
+	echo "ZRAM Virtual Swap  : $(grep '/dev/zram0' /proc/swaps 2>/dev/null || echo 'inactive')"
+	echo "GIC VPE Interrupts :"
+	grep -E '1e100000.ethernet|mt76|eip93|crypto' /proc/interrupts 2>/dev/null || true
+}
+
 case "${1:-all}" in
+	status)
+		dump_silicon_status
+		;;
 	mumimo-check)
 		verify_and_fix_mumimo_state
 		;;
