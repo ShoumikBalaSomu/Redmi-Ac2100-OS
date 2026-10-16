@@ -1,4 +1,4 @@
-# NexRouter v3.6 — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
+# NexRouter v4.3.0 — AX1800 Wi-Fi 6 Hybrid, Hardware WPA3 & Closed-Source Reverse-Engineered Edition — Cloud Snapshot Builder & Stock Silicon Max Edition (Redmi-AC2100-OS)
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ShoumikBalaSomu/Redmi-Ac2100-OS/blob/main/colab/NexRouter_OpenWrt_Builder.ipynb)
 ![OpenWrt Snapshot](https://img.shields.io/badge/OpenWrt-SNAPSHOT%20%7C%2024.10.2-00B5E2?logo=openwrt)
