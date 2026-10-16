@@ -179,6 +179,8 @@ for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' |
 			set wireless.$dev.noscan='1'
 			set wireless.$dev.ldpc='1'
 			set wireless.$dev.short_gi_80='1'
+			set wireless.$dev.htc_vht='1'
+			set wireless.$dev.vht_txop_ps='0'
 			set wireless.$dev.tx_stbc='0'
 			set wireless.$dev.rx_stbc='0'
 			del wireless.$dev.vht_max_mpdu
@@ -249,6 +251,13 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
+			set wireless.$iface.mbo='1'
+			set wireless.$iface.rnr='1'
+			set wireless.$iface.rrm_neighbor_report='1'
+			set wireless.$iface.rrm_beacon_report='1'
+			set wireless.$iface.okc='1'
+			set wireless.$iface.sae_require_mfp='1'
+			set wireless.$iface.qos_map_set='0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56'
 			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
@@ -273,6 +282,13 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
+			set wireless.$iface.mbo='1'
+			set wireless.$iface.rnr='1'
+			set wireless.$iface.rrm_neighbor_report='1'
+			set wireless.$iface.rrm_beacon_report='1'
+			set wireless.$iface.okc='1'
+			set wireless.$iface.sae_require_mfp='1'
+			set wireless.$iface.qos_map_set='0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56'
 			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	fi

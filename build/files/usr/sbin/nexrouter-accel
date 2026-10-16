@@ -111,6 +111,11 @@ enable_hw_wpa3_and_eip93_crypto() {
 				uci -q set "wireless.$iface.ocv=0"
 				uci -q set "wireless.$iface.wpa_group_rekey=86400"
 				uci -q set "wireless.$iface.eapol_key_retries=1"
+				uci -q set "wireless.$iface.mbo=1"
+				uci -q set "wireless.$iface.rnr=1"
+				uci -q set "wireless.$iface.okc=1"
+				uci -q set "wireless.$iface.sae_require_mfp=1"
+				uci -q set "wireless.$iface.qos_map_set=0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56"
 				changed=1
 			fi
 		fi
