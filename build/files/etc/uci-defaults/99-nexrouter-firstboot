@@ -107,7 +107,6 @@ fi
 
 if [ -d /www/nex ]; then
 	uci -q del_list uhttpd.main.alias='/nex=/www/nex' 2>/dev/null || true
-	uci -q add_list uhttpd.main.alias='/nex=/www/nex'
 	uci -q commit uhttpd
 fi
 
