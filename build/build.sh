@@ -342,7 +342,7 @@ make image \
   -j"$JOBS"
 
 # Standardize binary name and checksum
-SYSUPGRADE_RAW="$(find "$OUT" -maxdepth 1 -name "*squashfs-sysupgrade.bin" ! -name "NexRouter-OS-*" | head -n 1)"
+SYSUPGRADE_RAW="$(ls -t "$OUT"/*-squashfs-sysupgrade.bin 2>/dev/null | grep -v 'NexRouter-OS-' | head -n 1)"
 V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "9.2.0")"
 if [ -n "$SYSUPGRADE_RAW" ] && [ -f "$SYSUPGRADE_RAW" ]; then
   STANDARDIZED_NAME="NexRouter-OS-v${V_TAG}-ramips-mt7621-${PROFILE}-squashfs-sysupgrade.bin"
