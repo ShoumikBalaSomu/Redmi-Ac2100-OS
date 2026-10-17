@@ -1,0 +1,14 @@
+{
+	"admin/system/nexrouter": {
+		"title": "NexRouter Silicon & OS",
+		"order": 15,
+		"action": {
+			"type": "view",
+			"path": "nexrouter/control"
+		},
+		"depends": {
+			"acl": [ "nexrouter-admin", "unauthenticated" ],
+			"uci": { "nexrouter": true }
+		}
+	}
+}

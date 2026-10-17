@@ -166,6 +166,9 @@ fi
 if [ -d "$WORK/local_root/usr/bin" ]; then
   export PATH="$WORK/local_root/usr/bin:$PATH"
 fi
+if [ -d "$IB_DIR/staging_dir/host/bin" ]; then
+  export PATH="$IB_DIR/staging_dir/host/bin:$PATH"
+fi
 export PERL5LIB="$PERL5_DIR:$WORK/local_root/usr/share/perl5/vendor_perl:$WORK/local_root/usr/share/perl5:$WORK/local_root/usr/lib64/perl5/vendor_perl:${PERL5LIB:-}"
 
 # ---- fetch the Image Builder ---------------------------------------------
@@ -287,6 +290,25 @@ fi
 # Make the shipped scripts executable — cp -a preserves mode, but files created
 # by tooling on Windows lose it, and a non-executable uci-defaults script
 # silently does nothing.
+
+# Cross-compile native MIPS32el 1004Kc hardware binaries (nexsilicon_hw & nexqio) if toolchain is available
+MIPS_CC=""
+if command -v mipsel-linux-gnu-gcc >/dev/null 2>&1; then
+  MIPS_CC="mipsel-linux-gnu-gcc"
+elif [ -x "/home/krishna/Downloads/nexrouter/build/snapshot/sdk/staging_dir/toolchain-mipsel_24kc_gcc-14.4.0_musl/bin/mipsel-openwrt-linux-musl-gcc" ]; then
+  MIPS_CC="/home/krishna/Downloads/nexrouter/build/snapshot/sdk/staging_dir/toolchain-mipsel_24kc_gcc-14.4.0_musl/bin/mipsel-openwrt-linux-musl-gcc"
+elif [ -x "/home/krishna/Downloads/nexrouter/build/sdk/openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl/bin/mipsel-openwrt-linux-musl-gcc" ]; then
+  MIPS_CC="/home/krishna/Downloads/nexrouter/build/sdk/openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl/bin/mipsel-openwrt-linux-musl-gcc"
+fi
+
+if [ -n "$MIPS_CC" ]; then
+  echo "==> cross-compiling native MIPS 1004Kc C silicon engines (nexsilicon_hw & nexqio) with $MIPS_CC"
+  mkdir -p "$FILES/usr/sbin" "$FILES/usr/bin"
+  $MIPS_CC -s -O3 -mips32r2 "$ROOT/src/nexsilicon/nexsilicon_hw.c" -o "$FILES/usr/sbin/nexsilicon_hw" 2>/dev/null || true
+  $MIPS_CC -s -O3 -mips32r2 "$ROOT/src/nexqio/nexqio.c" -o "$FILES/usr/bin/nexqio" 2>/dev/null || true
+  chmod 0755 "$FILES/usr/sbin/nexsilicon_hw" "$FILES/usr/bin/nexqio" 2>/dev/null || true
+fi
+
 echo "==> normalising executable bits"
 find "$FILES" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
   -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' -o -path '*/rpcd/*' \) -exec chmod 0755 {} +
@@ -297,7 +319,7 @@ mkdir -p "$FILES/etc"
 cat > "$FILES/etc/nexrouter-release" <<EOF
 NEXROUTER_NAME="NexRouter OS"
 NEXROUTER_VERSION=$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)
-NEXROUTER_CODENAME="Apex-Silicon-Linux6.18.55-Verified-v5.2"
+NEXROUTER_CODENAME="Apex-Quantum-Ising-Silicon-v9.1"
 NEXROUTER_TARGET=$TARGET
 NEXROUTER_DEVICE=$PROFILE
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -321,7 +343,7 @@ make image \
 
 # Standardize binary name and checksum
 SYSUPGRADE_RAW="$(find "$OUT" -maxdepth 1 -name "*squashfs-sysupgrade.bin" ! -name "NexRouter-OS-*" | head -n 1)"
-V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "5.0.0")"
+V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "9.1.0")"
 if [ -n "$SYSUPGRADE_RAW" ] && [ -f "$SYSUPGRADE_RAW" ]; then
   STANDARDIZED_NAME="NexRouter-OS-v${V_TAG}-ramips-mt7621-${PROFILE}-squashfs-sysupgrade.bin"
   cp -f "$SYSUPGRADE_RAW" "$OUT/$STANDARDIZED_NAME"

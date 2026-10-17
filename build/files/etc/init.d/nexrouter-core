@@ -172,7 +172,7 @@ configure_napi_rps_and_lan_switch() {
 		[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
 	done
 
-	log "4-VPE SMP (Wired RPS=3, Wi-Fi RPS=e, 5G IRQ=c) + No-Qdisc WAN fastpath active"
+	log "4-VPE SMP (Eth IRQ=2[VPE1], 5G IRQ=4[VPE2], 2.4G IRQ=8[VPE3], Wired RPS/XPS=3, Wi-Fi RPS=d/XPS=c) active"
 }
 
 # 4. Sweet-Spot 64-MPDU AQL Window (5000/10000 us, threshold 24000 us) + RTS=2347
@@ -239,6 +239,7 @@ start() {
 	configure_napi_rps_and_lan_switch
 	configure_wifi_lowlevel
 	verify_offload
+	[ -x /usr/sbin/nexrouter-kernel-sync ] && /usr/sbin/nexrouter-kernel-sync all 2>/dev/null || true
 	[ -x /usr/sbin/nexrouter-accel ] && /usr/sbin/nexrouter-accel all 2>/dev/null || true
 }
 

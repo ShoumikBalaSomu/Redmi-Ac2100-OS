@@ -307,6 +307,14 @@ export class UbusClient {
   dohGet()            { return this.call('nexrouter', 'doh_get'); }
   hardwareChips()     { return this.call('nexrouter', 'hardware_chips'); }
   authStatus()        { return this.call('nexrouter', 'auth_status'); }
+  siliconGet()        { return this.call('nexrouter', 'silicon_get'); }
+  pqcKeygen()         { return this.call('nexrouter', 'pqc_keygen'); }
+  siliconSet({ feature, value }) {
+    return this.call('nexrouter', 'silicon_set', {
+      feature: String(feature),
+      value: typeof value === 'boolean' ? (value ? '1' : '0') : String(value),
+    });
+  }
   setPassword({ password, require_login }) {
     return this.call('nexrouter', 'set_password', {
       ...(password === undefined ? {} : { password: String(password) }),

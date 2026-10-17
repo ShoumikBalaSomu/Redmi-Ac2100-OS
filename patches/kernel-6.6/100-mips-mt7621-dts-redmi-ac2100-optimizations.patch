@@ -1,6 +1,6 @@
 From: NexRouter Engineering <eng@nexrouter.io>
 Date: Fri, 16 Oct 2026 12:10:00 +0600
-Subject: [PATCH 100/106] mips: mt7621: dts: unlock 1.2Gbps TRGMII switch trunk, 0x4da8 EEPROM, EIP-93 HW crypto & HSDMA
+Subject: [PATCH 100/109] mips: mt7621: dts: unlock 1.2Gbps TRGMII switch trunk, 0x4da8 EEPROM, EIP-93 HW crypto, HSDMA & No-Pause HoL Fix
 
 Pushes the Xiaomi Redmi Router AC2100 (MT7621AT + MT7530 + MT7615N + MT7603EN)
 Device Tree to its theoretical silicon limits:
@@ -8,15 +8,18 @@ Device Tree to its theoretical silicon limits:
      `trgmii` (1.2 Gbps Turbo RGMII @ 150 MHz DDR), eliminating the 4-byte
      MediaTek DSA switch tag overhead bottleneck on `lan1`..`lan3` and providing
      2.2 Gbps combined internal Ethernet bandwidth (1.2G LAN + 1.0G WAN gmac1).
-  2. Expands `eeprom_factory_8000` to full `0x4da8` (19,880 bytes) for MT7615N
+  2. Explicitly deletes `pause` from the `gmac0` and `port@6` `fixed-link` nodes
+     (`/delete-property/ pause;`) so a 5 GHz Wi-Fi burst never emits 802.3x
+     PAUSE frames that freeze wired LAN ports (`lan1`..`lan3`).
+  3. Expands `eeprom_factory_8000` to full `0x4da8` (19,880 bytes) for MT7615N
      4x4 eBF/iBF and per-rate power calibration.
-  3. Enables `crypto@1e004000` (Inside Secure EIP-93 hardware crypto engine),
+  4. Enables `crypto@1e004000` (Inside Secure EIP-93 hardware crypto engine),
      `gdma@2800` (16-ch General DMA), and `hsdma@7000` (High-Speed DMA).
-  4. Disables PCIe L0s/L1 ASPM on `pcie0` (MT7615N) and `pcie1` (MT7603EN).
+  5. Disables PCIe L0s/L1 ASPM on `pcie0` (MT7615N) and `pcie1` (MT7603EN).
 
 --- a/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
 +++ b/target/linux/ramips/dts/mt7621_xiaomi_router-ac2100.dtsi
-@@ -5,33 +5,46 @@
+@@ -5,33 +5,54 @@
  /* override EEPROM size to 0x4da8 for MT7615 */
  &eeprom_factory_8000 {
  	reg = <0x8000 0x4da8>;
@@ -69,12 +72,20 @@ Device Tree to its theoretical silicon limits:
  	nvmem-cells = <&macaddr_factory_e000>;
  	nvmem-cell-names = "mac-address";
 +	phy-mode = "trgmii";
++
++	fixed-link {
++		/delete-property/ pause;
++	};
  };
-@@ -52,6 +65,10 @@
+@@ -52,6 +73,14 @@
  &switch0 {
  	ports {
 +		port@6 {
 +			phy-mode = "trgmii";
++
++			fixed-link {
++				/delete-property/ pause;
++			};
 +		};
 +
  		port@2 {

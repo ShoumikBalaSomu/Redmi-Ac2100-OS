@@ -1,12 +1,11 @@
---- a/mt7615/init.c
-+++ b/mt7615/init.c
-@@ -340,6 +340,9 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
- 	if (!dev->dbdc_support)
- 		vht_cap->cap |= IEEE80211_VHT_CAP_SHORT_GI_160 |
- 				IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
-+	/* Always advertise 160 MHz & 80+80 MHz non-contiguous VHT80P80 on 4T4R MT7615N */
-+	vht_cap->cap |= IEEE80211_VHT_CAP_SHORT_GI_160 |
-+			IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Fri, 16 Oct 2026 09:15:00 +0600
+Subject: [PATCH 204/211] mt7615: support VHT80P80 (80+80 MHz) secondary center frequency (chan2) in Andes N9 MCU
+
+Enables non-contiguous dual-80 MHz (`NL80211_CHAN_WIDTH_80P80`, e.g., Ch 36 + Ch 149)
+channel programming in `mt7615_mcu_set_chan_info()` while clamping invalid
+contiguous 160 MHz requests to prevent rate-control stalls (openwrt/mt76#465).
+
 --- a/mt7615/mcu.c
 +++ b/mt7615/mcu.c
 @@ -2110,6 +2110,10 @@ int mt7615_mcu_set_chan_info(struct mt7615_phy *phy, int cmd)

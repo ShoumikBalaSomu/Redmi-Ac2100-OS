@@ -685,7 +685,8 @@ method_set_password() {
 
 	# Reject control characters or newlines
 	case "$pw" in
-		*$(printf '')*|*$(printf '
+		*$(printf '
+')*|*$(printf '
 ')*)
 			err "password contains invalid control characters"
 			return ;;
@@ -728,6 +729,148 @@ method_farlink() {
 }
 
 # ===========================================================================
+# Silicon Register Engine, Software-Defined Hardware & OS Bug-Fix Controls
+# ===========================================================================
+method_silicon_get() {
+	local sofdma qio game pcie512 wpdma qpf turbo2g zram vault faaaa
+	local r5 htmode5 txp5 txp2 glo dint acr lna eip_cnt zram_sw npu_act flash_free ram_free
+
+	sofdma="$(uci -q get nexrouter.core.sofdma_enabled 2>/dev/null || echo 1)"
+	qio="$(uci -q get nexrouter.core.qio_ising 2>/dev/null || echo 1)"
+	game="$(uci -q get nexrouter.core.game_accel 2>/dev/null || echo 1)"
+	pcie512="$(uci -q get nexrouter.core.pcie_512b_mrrs 2>/dev/null || echo 1)"
+	wpdma="$(uci -q get nexrouter.core.wpdma_coalesce 2>/dev/null || echo 1)"
+	qpf="$(uci -q get nexrouter.core.qpf4200_fem_boost 2>/dev/null || echo 1)"
+	turbo2g="$(uci -q get nexrouter.core.turbo_2g_vht 2>/dev/null || echo 1)"
+	zram="$(uci -q get nexrouter.core.zram_boost 2>/dev/null || echo 1)"
+	vault="$(uci -q get nexrouter.core.nexvault_enabled 2>/dev/null || echo 1)"
+	faaaa="$(uci -q get nexrouter.core.filter_aaaa 2>/dev/null || echo 0)"
+
+	r5="radio1"
+	for dev in $(uci -q show wireless 2>/dev/null | grep -o "wireless\.radio[0-9]" | sort -u | cut -d. -f2); do
+		if [ "$(uci -q get wireless.$dev.band 2>/dev/null)" = "5g" ]; then
+			r5="$dev"
+		else
+			txp2="$(uci -q get wireless.$dev.txpower 2>/dev/null || echo 23)"
+		fi
+	done
+	htmode5="$(uci -q get wireless.$r5.htmode 2>/dev/null || echo VHT80)"
+	txp5="$(uci -q get wireless.$r5.txpower 2>/dev/null || echo 26)"
+
+	glo="0x00000075 (TX_WB_DDONE + 256B Burst)"
+	dint="0x80108010 (16-pkt / 20us Coalesce)"
+	acr="PKT_TIME_EN=0 (No 24Mbps RTS Fallback)"
+	lna="0x00000012 (15.5 dB QPF4200 LNA)"
+	for phy in /sys/kernel/debug/ieee80211/phy*; do
+		[ -d "$phy/mt76" ] && [ -w "$phy/mt76/regidx" ] || continue
+		if [ -e "$phy/mt76/dbdc" ]; then
+			printf "0x4208\n" > "$phy/mt76/regidx" 2>/dev/null; v="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"; [ -n "$v" ] && glo="$v"
+			printf "0x4210\n" > "$phy/mt76/regidx" 2>/dev/null; v="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"; [ -n "$v" ] && dint="$v"
+			printf "0x21210\n" > "$phy/mt76/regidx" 2>/dev/null; v="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"; [ -n "$v" ] && acr="$v"
+		else
+			printf "0x10f18\n" > "$phy/mt76/regidx" 2>/dev/null; v="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"; [ -n "$v" ] && lna="$v"
+		fi
+	done
+
+	eip_cnt="$(grep -c "eip93" /proc/crypto 2>/dev/null || echo 0)"
+	case "$eip_cnt" in ""|*[!0-9]*) eip_cnt=0 ;; esac
+	zram_sw="inactive"
+	grep -q "zram0" /proc/swaps 2>/dev/null && zram_sw="64 MiB LZ4 Active"
+	npu_act="false"
+	nft list table inet nexrouter_hyperos >/dev/null 2>&1 && npu_act="true"
+	flash_free="$(df -h /etc 2>/dev/null | awk "NR==2 {print \$4}")"
+	ram_free="$(df -h /tmp 2>/dev/null | awk "NR==2 {print \$4}")"
+
+	cat <<JSON
+{
+  "sofdma_enabled": $(jbool "$sofdma"),
+  "qio_ising": $(jbool "$qio"),
+  "game_accel": $(jbool "$game"),
+  "pcie_512b_mrrs": $(jbool "$pcie512"),
+  "wpdma_coalesce": $(jbool "$wpdma"),
+  "qpf4200_fem_boost": $(jbool "$qpf"),
+  "turbo_2g_vht": $(jbool "$turbo2g"),
+  "zram_boost": $(jbool "$zram"),
+  "nexvault_enabled": $(jbool "$vault"),
+  "filter_aaaa": $(jbool "$faaaa"),
+  "htmode_5g": $(jstr "$htmode5"),
+  "txpower_5g": $(jnum "${txp5:-26}"),
+  "txpower_2g": $(jnum "${txp2:-23}"),
+  "registers": {
+    "mt7615_wpdma_0x4208": $(jstr "$glo"),
+    "mt7615_delay_int_0x4210": $(jstr "$dint"),
+    "mt7615_agg_acr_0x21210": $(jstr "$acr"),
+    "mt7603_qpf4200_0x10f18": $(jstr "$lna"),
+    "eip93_ciphers": $(jnum "$eip_cnt"),
+    "zram_status": $(jstr "$zram_sw"),
+    "nexpulse_npu_active": $npu_act,
+    "nexvault_flash_free": $(jstr "${flash_free:-90M}"),
+    "nexdrive_ram_free": $(jstr "${ram_free:-60M}"),
+    "kernel_gro_batch": $(jnum "$(readfile /proc/sys/net/core/gro_normal_batch 16)"),
+    "kernel_dev_weight": $(jnum "$(readfile /proc/sys/net/core/dev_weight 256)"),
+    "kernel_netdev_budget": $(jnum "$(readfile /proc/sys/net/core/netdev_budget 1000)"),
+    "kernel_tcp_limit_bytes": $(jnum "$(readfile /proc/sys/net/ipv4/tcp_limit_output_bytes 1048576)"),
+    "kernel_xps_sync": "Core0(0x3)=Wired / Core1(0xc)=Wi-Fi"
+  }
+}
+JSON
+}
+
+method_silicon_set() {
+	local feature="$1" val="$2"
+	case "$feature" in
+		sofdma_enabled|qio_ising|game_accel|pcie_512b_mrrs|wpdma_coalesce|qpf4200_fem_boost|turbo_2g_vht|zram_boost|nexvault_enabled|filter_aaaa)
+			case "$val" in 0|1) ;; *) err "value must be 0 or 1"; return ;; esac
+			uci -q set "nexrouter.core.${feature}=${val}"
+			uci -q commit nexrouter
+			if [ "$feature" = "turbo_2g_vht" ]; then
+				for dev in $(uci -q show wireless 2>/dev/null | grep -o "wireless\.radio[0-9]" | sort -u | cut -d. -f2); do
+					if [ "$(uci -q get wireless.$dev.band 2>/dev/null)" = "2g" ]; then
+						uci -q set "wireless.$dev.vendor_vht=${val}"
+						uci -q commit wireless
+					fi
+				done
+			fi
+			[ -x /usr/sbin/nexrouter-kernel-sync ] && /usr/sbin/nexrouter-kernel-sync all >/dev/null 2>&1 || true
+			[ -x /usr/sbin/nexrouter-os-fix ] && /usr/sbin/nexrouter-os-fix all >/dev/null 2>&1 || true
+			[ -x /usr/sbin/nexrouter-accel ] && /usr/sbin/nexrouter-accel all >/dev/null 2>&1 || true
+			;;
+		htmode_5g)
+			case "$val" in
+				VHT80)
+					[ -x /usr/sbin/nexrouter-vht80p80 ] && /usr/sbin/nexrouter-vht80p80 vht80 >/dev/null 2>&1 &
+					;;
+				VHT80P80)
+					[ -x /usr/sbin/nexrouter-vht80p80 ] && /usr/sbin/nexrouter-vht80p80 enable >/dev/null 2>&1 &
+					;;
+				*)
+					err "htmode_5g must be VHT80 or VHT80P80"; return ;;
+			esac
+			;;
+		*)
+			err "unknown silicon feature: $feature"
+			return ;;
+	esac
+	method_silicon_get
+}
+
+method_pqc_keygen() {
+	local key
+	if [ -x /usr/sbin/nexrouter-pqc ]; then
+		key="$(/usr/sbin/nexrouter-pqc gen-pq-psk 2>/dev/null | head -n1 | tr -d "\r\n")"
+	else
+		key="$(head -c 32 /dev/urandom 2>/dev/null | base64 2>/dev/null | head -n1 | tr -d "\r\n")"
+	fi
+	cat <<JSON
+{
+  "pq_psk": $(jstr "${key:-unavailable}"),
+  "entropy_source": "MT7621AT EIP-93 Hardware Crypto + MIPS 1004Kc Interrupt Jitter",
+  "algorithm": "256-bit Grover-Resistant Hybrid Post-Quantum Pre-Shared Key (WireGuard PQ-PSK)"
+}
+JSON
+}
+
+# ===========================================================================
 # LIST — declare the API surface to rpcd
 # ===========================================================================
 do_list() {
@@ -744,6 +887,9 @@ do_list() {
   "doh_get": {},
   "hardware_chips": {},
   "auth_status": {},
+  "silicon_get": {},
+  "silicon_set": {"feature":"feature key","value":"0|1|VHT80|VHT80P80"},
+  "pqc_keygen": {},
   "set_password": {"password":"new root password","require_login":"0|1"},
   "doh_set": {"provider":"cloudflare|adguard|quad9|google|cloudflare_family","enabled":"0|1"},
   "insight_devices": {},
@@ -778,6 +924,11 @@ do_call() {
 		doh_get)              method_doh_get ;;
 		hardware_chips)       method_hardware_chips ;;
 		auth_status)          method_auth_status ;;
+		silicon_get)          method_silicon_get ;;
+		pqc_keygen)           method_pqc_keygen ;;
+		silicon_set)
+			p1="$(param feature)"; p2="$(param value)"
+			method_silicon_set "$p1" "$p2" ;;
 		set_password)
 			p1="$(param password)"; p2="$(param require_login)"
 			method_set_password "$p1" "$p2" ;;

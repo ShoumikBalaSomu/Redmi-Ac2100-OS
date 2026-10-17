@@ -127,6 +127,25 @@ enable_hw_wpa3_and_eip93_crypto() {
 	log "Hardware WPA3-SAE + AX1800 Wi-Fi 6 MBO/RNR/OKC/QoS-Map active"
 }
 
+
+optimize_pcie_512b_mrrs_and_switch_pause() {
+	# 1. If compiled C nexsilicon_hw binary is present, run it directly
+	if [ -x /usr/bin/ucode ] && [ -x /usr/sbin/nexrouter-silicon ]; then
+		/usr/sbin/nexrouter-silicon apply >/dev/null 2>&1 || true
+	elif [ -x /usr/sbin/nexsilicon_hw ]; then
+		/usr/sbin/nexsilicon_hw >/dev/null 2>&1 || true
+	fi
+
+	# 2. Disable 802.3x symmetric PAUSE frames on internal gmac0 (eth0) -> MT7530 Port 6
+	#    so a 5 GHz Wi-Fi burst never freezes wired LAN ports (lan1..lan3)!
+	if command -v ethtool >/dev/null 2>&1; then
+		for p in eth0 lan1 lan2 lan3 wan; do
+			[ -d "/sys/class/net/$p" ] && ethtool -A "$p" rx off tx off 2>/dev/null || true
+		done
+	fi
+	log "NexSilicon v7.0: PCIe 512B MRRS + Relaxed Ordering + MT7530 No-Pause HoL Unblock active"
+}
+
 enable_bridger_and_ppe_fastpath() {
 	if [ -x /etc/init.d/bridger ]; then
 		/etc/init.d/bridger enable 2>/dev/null || true
@@ -134,7 +153,6 @@ enable_bridger_and_ppe_fastpath() {
 		log "bridger eBPF L2 bridge offload active on eth0 -> phy1-ap0"
 	fi
 	sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1 || true
-	sysctl -w net.netfilter.nf_conntrack_tcp_no_window_check=1 >/dev/null 2>&1 || true
 }
 
 dump_silicon_status() {
@@ -172,5 +190,7 @@ case "${1:-all}" in
 		verify_and_fix_mumimo_state
 		enable_hw_wpa3_and_eip93_crypto
 		enable_bridger_and_ppe_fastpath
+		optimize_pcie_512b_mrrs_and_switch_pause
+		[ -x /usr/sbin/nexrouter-os-fix ] && /usr/sbin/nexrouter-os-fix all 2>/dev/null || true
 		;;
 esac

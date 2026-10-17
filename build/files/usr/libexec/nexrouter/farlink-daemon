@@ -278,6 +278,16 @@ while :; do
 		CCA_ED_DBM=-82
 	fi
 
+	# Run Quantum-Inspired Simulated Bifurcation (dSB) Ising Solver for sOFDMA / AQL
+	if [ -x /usr/libexec/nexrouter/qio-ising-engine ]; then
+		qio_out="$(/usr/libexec/nexrouter/qio-ising-engine "$worst_rssi" "$avg_retry_pct" "$sta_count" "$tput_kbps" 2>/dev/null)"
+		if [ -n "$qio_out" ]; then
+			OBSS_PD_MODE="$(printf '%s' "$qio_out" | cut -d'|' -f1)"
+			ACTIVE_AQL="$(printf '%s' "$qio_out" | cut -d'|' -f2)"
+			ACTIVE_RTS="$(printf '%s' "$qio_out" | cut -d'|' -f3)"
+			CCA_ED_DBM="$(printf '%s' "$qio_out" | cut -d'|' -f4)"
+		fi
+	fi
 	if [ "$ai_bandit" = "1" ]; then
 		bandit_out="$(awk -v cur_arm="$ACTIVE_ARM" -v wrssi="$worst_rssi" -v retry="$avg_retry_pct" -v kbps="$tput_kbps" '
 		BEGIN { FS="\t"; OFS="\t"; tot_pulls = 0 }
@@ -319,7 +329,7 @@ while :; do
 		if [ -n "$bandit_out" ]; then
 			ACTIVE_ARM="$(printf '%s' "$bandit_out" | cut -d'|' -f1)"
 			ACTIVE_ARM_NAME="$(printf '%s' "$bandit_out" | cut -d'|' -f2)"
-			ACTIVE_AQL="$(printf '%s' "$bandit_out" | cut -d'|' -f3)"
+			[ "${sta_count:-0}" -lt 2 ] && ACTIVE_AQL="$(printf '%s' "$bandit_out" | cut -d'|' -f3)"
 			ACTIVE_RTS="$(printf '%s' "$bandit_out" | cut -d'|' -f4)"
 			ACTIVE_SCORE="$(printf '%s' "$bandit_out" | cut -d'|' -f5)"
 			apply_radio_arm_and_obss_pd "$ACTIVE_AQL" "$ACTIVE_RTS" "$CCA_ED_DBM"

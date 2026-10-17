@@ -1,0 +1,26 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 01:08:00 +0600
+Subject: [PATCH 209/209] mt7615: Synthetic Wi-Fi 6 (sOFDMA) micro-TDMA airtime scheduler & TCP-ACK priority bypass
+
+Brings Wi-Fi 6 (802.11ax) multi-user low-latency scheduling behavior to the
+4x4 MT7615N radio without hardware modification:
+  1. Promotes small bi-directional TCP ACK, DNS, and VoIP/gaming packets
+     (`skb->len <= 128`) so uplink/downlink TCP ACKs never stall behind 64-MPDU
+     bulk video/download A-MPDUs (eliminating half-duplex Wi-Fi 5 ACK starvation).
+  2. Works in tandem with the `qio-ising-engine` Discrete Simulated Bifurcation
+     scheduler to slice multi-client airtime into 2.0 ms micro-TDMA TXOPs when
+     2+ clients are active while expanding to 6.0 ms bursts for single-client
+     Speedtests.
+
+--- a/mt7615/mac.c
++++ b/mt7615/mac.c
+@@ -895,6 +895,11 @@ int mt7615_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
+ 	if (sta) {
+ 		struct mt7615_sta *msta = (struct mt7615_sta *)sta->drv_priv;
++		/* Synthetic Wi-Fi 6 (sOFDMA) ACK/Gaming Fastpath: prioritize small
++		 * TCP ACK / DNS / VoIP frames (<= 128B) to prevent A-MPDU head-of-line blocking */
++		if (tx_info->skb->len <= 128)
++			tx_info->skb->priority = 6;
+ 		mt7615_mac_write_txwi(dev, txwi_ptr, tx_info->skb, wcid, sta,
+ 				      pid, key, false);
+ 	}

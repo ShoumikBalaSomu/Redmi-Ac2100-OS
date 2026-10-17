@@ -211,7 +211,8 @@
           "export_get",
           "insight_devices",
           "insight_anomalies",
-          "insight_config"
+          "insight_config",
+          "silicon_get"
         ],
         "system": [
           "board",
@@ -344,7 +345,9 @@
     "write": {
       "ubus": {
         "nexrouter": [
-          "*"
+          "*",
+          "silicon_set",
+          "pqc_keygen"
         ],
         "system": [
           "*"

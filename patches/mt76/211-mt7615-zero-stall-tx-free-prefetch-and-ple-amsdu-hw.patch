@@ -1,0 +1,23 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 01:30:00 +0600
+Subject: [PATCH 211/211] mt7615: pipeline-prefetch TX completion tokens in mt7615_mac_tx_free for MIPS 1004Kc
+
+When the MT7615N internal ARM Cortex-R4 MCU (`mt7615_cr4.bin`) returns a batched
+`MT_TX_FREE` event containing up to 64 completed TX token IDs, stock
+`mt7615_mac_tx_free()` dereferences each `mt76_txwi_cache` and `sk_buff`
+sequentially, stalling the 880 MHz MIPS 1004Kc pipeline on cold L1/L2 D-cache
+lines for every freed packet.
+This patch prefetches the `sk_buff` header in the TX token ring to hide DDR3
+latency during high-speed 64-MPDU bursts.
+
+--- a/mt7615/mac.c
++++ b/mt7615/mac.c
+@@ -1320,6 +1320,8 @@ static void mt7615_mac_tx_free(struct mt7615_dev *dev, void *data, int len)
+ 		txwi = mt76_token_release(mdev, wlan_idx, &wake);
+ 		if (!txwi)
+ 			continue;
++		if (txwi->skb)
++			prefetch(txwi->skb);
+ 
+ 		mt76_connac2_txwi_free(mdev, txwi, sta, &free_list);
+ 	}

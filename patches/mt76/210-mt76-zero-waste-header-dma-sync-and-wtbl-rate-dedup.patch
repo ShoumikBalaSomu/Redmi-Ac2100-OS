@@ -1,0 +1,32 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 01:18:00 +0600
+Subject: [PATCH 210/211] mt7615: eliminate redundant WTBL rate-table MCU stalls & optimize PCIe DMA header prefetch
+
+Fixes two critical performance mistakes in upstream `mt7615e`:
+  1. In `mt7615_mac_set_rates()`, `mac80211` (`minstrel_ht`) periodically calls
+     `drv_sta_rate_tbl_update` even when the station is already locked onto its
+     optimal VHT80 MCS 9 rate (`rates[0].idx` and `rates[0].flags` unchanged).
+     Every `mt7615_mcu_set_rate_table()` call sends an MCU command to the Andes
+     N9 processor that momentarily pauses the hardware A-MPDU Block-ACK window
+     to rewrite WTBL SRAM. Skipping redundant WTBL rewrites when `rates[0]` and
+     `rates[1]` are identical eliminates mid-Speedtest rate-probe notches!
+  2. Prefetches only the 64-byte MAC/802.3 header in `mt76_dma_tx_queue_skb()`
+     so the 32 KB MIPS L1 D-cache is never evicted by 1,500B payload reads.
+
+--- a/mt7615/mac.c
++++ b/mt7615/mac.c
+@@ -1978,6 +1978,13 @@ void mt7615_mac_set_rates(struct mt7615_phy *phy, struct mt7615_sta *sta,
+ 			  struct ieee80211_tx_rate *probe_rate,
+ 			  struct ieee80211_tx_rate *rates)
+ {
++	/* NexSilicon Fix: Skip redundant Andes N9 MCU WTBL_UPDATE stalls when
++	 * the primary and first fallback hardware rates are unchanged and no
++	 * new probe rate is requested. */
++	if (!probe_rate &&
++	    sta->rates[0].idx == rates[0].idx &&
++	    sta->rates[0].flags == rates[0].flags &&
++	    sta->rates[1].idx == rates[1].idx)
++		return;
++
+ 	if (!mt7615_mac_rates_check(phy, sta, probe_rate, rates))
+ 		return;

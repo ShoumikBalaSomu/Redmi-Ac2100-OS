@@ -1,5 +1,5 @@
 NEXROUTER_NAME="NexRouter OS"
-NEXROUTER_VERSION="5.2.0"
-NEXROUTER_CODENAME="Apex-Silicon-Linux6.18.55-Verified-v5.2"
+NEXROUTER_VERSION="9.1.0"
+NEXROUTER_CODENAME="Apex-Quantum-Ising-Silicon-v9.1"
 NEXROUTER_TARGET="ramips/mt7621"
 NEXROUTER_DEVICE="xiaomi_redmi-router-ac2100"

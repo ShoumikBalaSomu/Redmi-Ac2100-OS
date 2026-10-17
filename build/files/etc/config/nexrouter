@@ -1,5 +1,5 @@
 # ===========================================================================
-# NexRouter v3.0 Apex Edition — UCI Configuration
+# NexRouter v9.0.0 HyperOS Edition — UCI Configuration
 # ===========================================================================
 config core 'core'
 	option enabled '1'
@@ -9,13 +9,27 @@ config core 'core'
 	option aql_threshold '24000'
 	option pcie_aspm_off '1'
 	option turbo_2g_vht '1'
+	option zram_boost '1'
+	option qpf4200_fem_boost '1'
+	option pcie_512b_mrrs '1'
+	option wpdma_coalesce '1'
+	option sofdma_enabled '1'
+	option qio_ising '1'
+	option game_accel '1'
+	option nexvault_enabled '1'
+	option filter_aaaa '0'
+	option doh_enabled '1'
+	option doh_provider 'cloudflare'
+	option sqm_enabled '0'
 
 config roaming 'roaming'
 	option enabled '1'
 	option ai_bandit '1'
-	option rssi_ultra_near '-55'
-	option rssi_mid_bf '-68'
-	option rssi_far_wall '-75'
+	option obss_pd_spatial_reuse '1'
+	option thermal_guard '1'
+	option rssi_ultra_near '-58'
+	option rssi_mid_bf '-70'
+	option rssi_far_wall '-77'
 	option rssi_high_2g '-60'
 	option interval '3'
 

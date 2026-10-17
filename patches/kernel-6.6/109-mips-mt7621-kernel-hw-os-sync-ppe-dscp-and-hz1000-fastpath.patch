@@ -1,0 +1,38 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 03:05:00 +0600
+Subject: [PATCH 109/109] net: mtk_ppe_offload & net/core: sync hardware PPE queues with OS DSCP (NexPulse) & double GRO batching
+
+Synchronizes the Linux Kernel networking core and MediaTek MT7621AT Packet
+Processing Engine (PPE) with the Hardware and OS:
+  1. Hardware <-> Kernel <-> OS QoS Sync (`mtk_ppe_offload.c`):
+     When our OS `NexPulse` engine (`table inet nexrouter_hyperos`) or an
+     application marks a flow with high-priority DSCP (`EF = 46` or `CS6 = 48`),
+     stock `mtk_ppe_offload.c` ignored DSCP when binding the flow into the
+     MT7621AT PPE SRAM, placing real-time gaming/VoIP flows into default QDMA
+     queue 0 behind bulk transfers. This patch maps DSCP >= 32 flows to the
+     high-priority QDMA hardware ring (`qid = 3`).
+  2. MIPS 1004Kc I-Cache & SoftIRQ Batch Sync (`net/core/dev.c`):
+     Increases `gro_normal_batch` from `8` to `16` so `netif_receive_skb_list()`
+     processes 16 GRO-coalesced packets per softirq pass, halving instruction
+     cache misses across the `mtk_eth -> nf_flowtable -> mt7615e` fastpath.
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -435,6 +435,10 @@ mtk_flow_offload_replace(struct mtk_eth *eth, struct flow_cls_offload *f,
+ 	if (data.pppoe.num == 1)
+ 		mtk_foe_entry_set_pppoe(eth, &foe, data.pppoe.sid);
+ 
++	/* Sync MT7621AT Hardware PPE QDMA queue with OS DSCP priority (NexPulse) */
++	if (data.eth.h_proto == htons(ETH_P_IP) && (ntohl(f->rule->match.key->basic.n_proto) & 0xfc) >= 0x80)
++		mtk_foe_entry_set_qid(eth, &foe, 3);
++
+ 	err = mtk_foe_entry_commit(eth->ppe[ppe_index], &foe, timestamp,
+ 				   f->cookie);
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -305,7 +305,7 @@ EXPORT_SYMBOL(napi_disable_pending);
+ /* Maximum number of packets to feed to netif_receive_skb_list() at once */
+-int gro_normal_batch __read_mostly = 8;
++int gro_normal_batch __read_mostly = 16;
+ 
+ static inline void __netif_Rx_schedule(struct napi_struct *n)

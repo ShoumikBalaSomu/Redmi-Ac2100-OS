@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="100%" height="340">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#060b19"/>
+      <stop offset="50%" stop-color="#0b1736"/>
+      <stop offset="100%" stop-color="#052e46"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="340" rx="18" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
+  <circle cx="1050" cy="80" r="180" fill="#0ea5e9" opacity="0.08"/>
+  <circle cx="180" cy="280" r="160" fill="#6366f1" opacity="0.08"/>
+  <text x="54" y="72" fill="#38bdf8" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="15" font-weight="700" letter-spacing="2.5">XIAOMI REDMI ROUTER AC2100 (RM2100) • LINUX 6.18.55 SILICON-VERIFIED OS</text>
+  <text x="54" y="128" fill="#f8fafc" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="46" font-weight="800">NexRouter v6.0 — Apex Quantum &amp; Wi-Fi 6 Hybrid</text>
+  <rect x="54" y="148" width="520" height="4" rx="2" fill="url(#accent)"/>
+  <text x="54" y="188" fill="#cbd5e1" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="18">1.2 Gbps TRGMII Switch • Synthetic Wi-Fi 6 (sOFDMA + MBO/RNR) • Hardware WPA3 (WTBL + EIP-93) • QIO Ising RF Engine</text>
+
+  <!-- 5 Architecture Pills -->
+  <g transform="translate(54, 222)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600">
+    <rect x="0" y="0" width="205" height="76" rx="10" fill="#0f172a" stroke="#0284c7" stroke-width="1.5"/>
+    <text x="16" y="28" fill="#38bdf8">MT7621AT + MT7530</text>
+    <text x="16" y="50" fill="#94a3b8">4-VPE @ 880MHz • 1.2G</text>
+    <text x="16" y="66" fill="#2dd4bf">TRGMII + 16K PPE Flows</text>
+
+    <rect x="220" y="0" width="215" height="76" rx="10" fill="#0f172a" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="236" y="28" fill="#818cf8">MT7615N 4×4 (5 GHz)</text>
+    <text x="236" y="50" fill="#94a3b8">1733 Mbps • STA_REC_BF</text>
+    <text x="236" y="66" fill="#2dd4bf">sOFDMA + 802.3 HW Encap</text>
+
+    <rect x="450" y="0" width="215" height="76" rx="10" fill="#0f172a" stroke="#10b981" stroke-width="1.5"/>
+    <text x="466" y="28" fill="#34d399">2× Qorvo QPF4200</text>
+    <text x="466" y="50" fill="#94a3b8">Wi-Fi 6 +5V FEMs (2.4G)</text>
+    <text x="466" y="66" fill="#2dd4bf">400 Mbps 256-QAM • 15.5dB</text>
+
+    <rect x="680" y="0" width="205" height="76" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="696" y="28" fill="#fbbf24">HW WPA3 + EIP-93</text>
+    <text x="696" y="50" fill="#94a3b8">WTBL CCMP/BIP-CMAC</text>
+    <text x="696" y="66" fill="#2dd4bf">SAE-H2E + PQ-PSK</text>
+
+    <rect x="900" y="0" width="240" height="76" rx="10" fill="#0f172a" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="916" y="28" fill="#f472b6">QIO Ising RF + Dual UI</text>
+    <text x="916" y="50" fill="#94a3b8">Simulated Bifurcation</text>
+    <text x="916" y="66" fill="#2dd4bf">/nex/ SPA + Argon + FileMgr</text>
+  </g>
+</svg>

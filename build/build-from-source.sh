@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# NexRouter v5.0.0 Apex Full Source Builder (OpenWrt Snapshot / 24.10 + All 14 Custom Patches)
+# NexRouter v7.0.0 Apex Full Source Builder (OpenWrt Snapshot / 24.10 + All 19 Custom Patches (100-107 & 200-210))
 # ===========================================================================
 # Compiles OpenWrt from source with NexRouter's custom Kernel, DTS, TRGMII 1.2G,
 # MIPS 1004Kc DSP, EIP-93 Crypto, MT7530 DSA, and mt76 wireless/MCU patches:
@@ -59,13 +59,13 @@ echo "==> Updating and installing OpenWrt feeds"
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-echo "==> Injecting NexRouter Kernel, TRGMII 1.2G, EIP-93, 1004Kc DSP & MT7530 LAN patches (100-106)"
+echo "==> Injecting NexRouter Kernel, TRGMII 1.2G, EIP-93, 1004Kc DSP & MT7530 LAN patches (100-109)"
 for kdir in "$SRC_DIR"/target/linux/ramips/patches-*; do
   [ -d "$kdir" ] || continue
   cp -f "$ROOT/patches/kernel-6.6/"*.patch "$kdir/"
 done
 
-echo "==> Injecting NexRouter mt76 driver patches (200-208: STA_REC_BF, HW WPA3, 802.3 Encap, WPDMA Coalesce)"
+echo "==> Injecting NexRouter mt76 driver patches (200-211: STA_REC_BF, HW WPA3, 802.3 Encap, WPDMA Coalesce)"
 mkdir -p "$SRC_DIR/package/kernel/mt76/patches"
 cp -f "$ROOT/patches/mt76/"*.patch "$SRC_DIR/package/kernel/mt76/patches/"
 
@@ -75,6 +75,15 @@ rm -rf "$SRC_DIR/files"
 mkdir -p "$SRC_DIR/files/www/nex"
 cp -a "$ROOT/build/files/." "$SRC_DIR/files/"
 cp -a "$ROOT/webui/dist/." "$SRC_DIR/files/www/nex/"
+
+if command -v mipsel-linux-gnu-gcc >/dev/null 2>&1; then
+  mkdir -p "$SRC_DIR/files/usr/sbin" "$SRC_DIR/files/usr/bin"
+  mipsel-linux-gnu-gcc -static -O3 -march=1004kc -mtune=1004kc -mdsp "$ROOT/src/nexsilicon/nexsilicon_hw.c" -o "$SRC_DIR/files/usr/sbin/nexsilicon_hw" 2>/dev/null || \
+    mipsel-linux-gnu-gcc -static -O3 -mips32r2 "$ROOT/src/nexsilicon/nexsilicon_hw.c" -o "$SRC_DIR/files/usr/sbin/nexsilicon_hw"
+  mipsel-linux-gnu-gcc -static -O3 -march=1004kc -mtune=1004kc -mdsp "$ROOT/src/nexqio/nexqio.c" -o "$SRC_DIR/files/usr/bin/nexqio" 2>/dev/null || \
+    mipsel-linux-gnu-gcc -static -O3 -mips32r2 "$ROOT/src/nexqio/nexqio.c" -o "$SRC_DIR/files/usr/bin/nexqio"
+  chmod 0755 "$SRC_DIR/files/usr/sbin/nexsilicon_hw" "$SRC_DIR/files/usr/bin/nexqio"
+fi
 
 find "$SRC_DIR/files" -type f \( -path '*/init.d/*' -o -path '*/uci-defaults/*' \
   -o -path '*/hotplug.d/*' -o -path '*/nexrouter/*' -o -path '*/sbin/*' -o -path '*/rpcd/*' \) -exec chmod 0755 {} +
@@ -86,6 +95,12 @@ CONFIG_TARGET_ramips_mt7621=y
 CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_redmi-router-ac2100=y
 CONFIG_SCHED_SMT=y
 CONFIG_MIPS_MT_SMP=y
+CONFIG_MIPS_CPS=y
+CONFIG_HIGHMEM=y
+CONFIG_HZ_1000=y
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_PREEMPT_VOLUNTARY=y
+CONFIG_NET_RX_BUSY_POLL=y
 CONFIG_PACKAGE_zram-swap=y
 CONFIG_PACKAGE_kmod-zram=y
 CONFIG_PACKAGE_kmod-lib-lz4=y

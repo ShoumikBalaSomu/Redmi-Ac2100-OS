@@ -107,6 +107,7 @@ fi
 
 if [ -d /www/nex ]; then
 	uci -q del_list uhttpd.main.alias='/nex=/www/nex' 2>/dev/null || true
+	uci -q add_list uhttpd.main.alias='/nex=/www/nex'
 	uci -q commit uhttpd
 fi
 
@@ -156,6 +157,13 @@ uci -q batch <<-EOF
 	set nexrouter.core.wifi6_airtime_fairness='1'
 	set nexrouter.core.zram_boost='1'
 	set nexrouter.core.qpf4200_fem_boost='1'
+	set nexrouter.core.pcie_512b_mrrs='1'
+	set nexrouter.core.wpdma_coalesce='1'
+	set nexrouter.core.sofdma_enabled='1'
+	set nexrouter.core.qio_ising='1'
+	set nexrouter.core.game_accel='1'
+	set nexrouter.core.nexvault_enabled='1'
+	set nexrouter.core.filter_aaaa='0'
 	set nexrouter.core.doh_enabled='1'
 	set nexrouter.core.doh_provider='cloudflare'
 	set nexrouter.roaming.enabled='1'
@@ -259,6 +267,8 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.bss_transition='1'
 			set wireless.$iface.mbo='1'
 			set wireless.$iface.rnr='1'
+			set wireless.$iface.bss_load_update_period='50'
+			set wireless.$iface.chan_util_avg_period='300'
 			set wireless.$iface.rrm_neighbor_report='1'
 			set wireless.$iface.rrm_beacon_report='1'
 			set wireless.$iface.okc='1'
@@ -290,6 +300,8 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.bss_transition='1'
 			set wireless.$iface.mbo='1'
 			set wireless.$iface.rnr='1'
+			set wireless.$iface.bss_load_update_period='50'
+			set wireless.$iface.chan_util_avg_period='300'
 			set wireless.$iface.rrm_neighbor_report='1'
 			set wireless.$iface.rrm_beacon_report='1'
 			set wireless.$iface.okc='1'
@@ -306,6 +318,7 @@ for svc in rpcd uhttpd zram miniupnpd nlbwmon https-dns-proxy nexrouter-core nex
 	[ -x "/etc/init.d/$svc" ] && "/etc/init.d/$svc" enable 2>/dev/null || true
 done
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null || true
+[ -x /usr/sbin/nexrouter-os-fix ] && /usr/sbin/nexrouter-os-fix all 2>/dev/null || true
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
 echo "nexrouter: v3.8 provisioning complete — open http://192.168.1.1/nex/ (no password required)"

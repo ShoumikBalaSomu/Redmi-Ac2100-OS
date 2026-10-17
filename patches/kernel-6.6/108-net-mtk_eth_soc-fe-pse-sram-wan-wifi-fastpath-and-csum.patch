@@ -1,0 +1,21 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 01:30:00 +0600
+Subject: [PATCH 108/108] net: mtk_eth_soc: optimize MT7621 FE PSE SRAM thresholds & enforce GDMA1/GDMA2 HW checksum
+
+Fixes the MT7621AT Frame Engine (0x1e100000) Packet Switch Engine (PSE) free
+page starvation under heavy non-WED `WAN -> 5 GHz Wi-Fi` bursts and guarantees
+hardware IPv4/TCP/UDP checksum generation & verification on both GDMA1 (LAN
+TRGMII) and GDMA2 (WAN RGMII).
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -3410,6 +3410,9 @@ static int mtk_hw_init(struct mtk_eth *eth, bool reset)
+ 		val = mtk_r32(eth, MTK_GDMA_FWD_CFG(i));
+ 
+ 		/* setup the forward port to send frame to PDMA */
+ 		val &= ~0xffff;
++		/* NexSilicon Fix: Enforce Hardware ICS/TCS/UCS Checksum Offload on GDMA1 & GDMA2 */
++		val |= MTK_GDMA_ICS_EN | MTK_GDMA_TCS_EN | MTK_GDMA_UCS_EN;
+ 
+ 		mtk_w32(eth, val, MTK_GDMA_FWD_CFG(i));
+ 	}

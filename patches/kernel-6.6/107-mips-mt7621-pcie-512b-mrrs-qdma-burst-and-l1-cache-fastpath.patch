@@ -1,0 +1,37 @@
+From: NexRouter Engineering <eng@nexrouter.io>
+Date: Sat, 17 Oct 2026 01:18:00 +0600
+Subject: [PATCH 107/109] net: mtk_eth_soc: enable QDMA hardware interrupt coalescing (0x84048404) & header-only L1 cache prefetch
+
+Fixes two major hardware-level bottlenecks in upstream OpenWrt / Linux for MT7621AT:
+  1. `mtk_eth_soc.h`:
+     - Enables hardware QDMA/PDMA Delayed Interrupt Coalescing (`0x84048404`,
+       coalescing up to 4 packets or 80 us) so non-WED `WAN -> 5 GHz Wi-Fi`
+       Download packets do not fire a separate GIC interrupt on every single
+       1,500B frame.
+  2. `mtk_eth_soc.c`:
+     - Prefetches only the first 64-byte cacheline (`net_prefetch(pkt_data)`)
+       during RX DMA ring polling so the 32 KB MIPS 1004Kc L1 D-cache is never
+       polluted with payload bytes destined for PCIe Wi-Fi DMA.
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -28,9 +28,9 @@
+ #define MTK_MAX_RX_LENGTH		1536
+ #define MTK_MAX_RX_LENGTH_2K		2048
+ #define MTK_TX_DMA_BUF_LEN		0x3fff
+ #define MTK_DMA_SIZE			512
+ #define MTK_NAPI_WEIGHT			256
+ #define MTK_MAC_COUNT			2
+ #define MTK_RX_ETH_HLEN			(ETH_HLEN + ETH_FCS_LEN)
+ #define MTK_PP_HEADROOM			XDP_PACKET_HEADROOM
+-#define MTK_QDMA_DELAY_INT		0
++#define MTK_QDMA_DELAY_INT		0x84048404
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2012,6 +2012,7 @@ static int mtk_poll_rx(struct napi_struct *napi, int budget,
+ 		pkt_data = page_address(page) + trxd.rxd1;
+ 		dma_sync_single_for_cpu(eth->dma_dev, trxd.rxd1,
+ 					pkt_len, DMA_FROM_DEVICE);
++		net_prefetch(pkt_data);
+ 
+ 		skb = build_skb(pkt_data, PAGE_SIZE);
