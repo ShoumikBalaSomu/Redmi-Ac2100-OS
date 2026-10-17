@@ -1,25 +1,28 @@
 #!/bin/sh
 # ===========================================================================
-# 99-nexrouter-firstboot (v3.8 Pure WPA3-SAE, VHT80P80 & Line-Rate Edition)
+# 99-nexrouter-firstboot (v9.2 Zero-Freeze Handshake & Line-Rate Edition)
 # ===========================================================================
-# Key Engineering Breakthroughs in v3.8:
-#   1. Eliminates the 294 Mbps Download Cap on 1 Gbps ISP Links:
-#      - Removes the default root `fq_codel` shaper on WAN (`20-nexrouter-qdisc`),
-#        which per `docs/03-performance-reality.md` §3 capped CPU-assisted flows
-#        at ~200-300 Mbps (294 Mbps)!
+# Key Stability & Performance Fixes in v9.2:
+#   1. Zero-Freeze LAN & Wireless Handshakes:
+#      - Sets `dhcp.@dnsmasq[0].nonwildcard='0'` so `dnsmasq` never unbinds
+#        from `br-lan` during interface state changes (guarantees instant
+#        DHCP handshakes on both wired LAN and Wi-Fi!).
+#      - Stops and disables `bridger` eBPF if present so L2 PPE flows never
+#        collide with `nf_flowtable` L3 hardware offload on `br-lan`.
+#      - Restores standard 4x EAPOL 4-way handshake retries (removes
+#        `eapol_key_retries='1'`) and uses `sae-mixed` (`ieee80211w='1'`)
+#        without MBO `assoc_disallow` locks for 100% client compatibility.
+#   2. Eliminates the 294 Mbps Download Cap on 1 Gbps ISP Links:
+#      - Removes the default root `fq_codel` shaper on WAN (`20-nexrouter-qdisc`).
 #      - Sets `tx_stbc='0'` & `rx_stbc='0'` on 5 GHz so MT7615N transmits full
-#        2x2/4x4 Spatial Multiplexing (866.7 / 1733.3 Mbps PHY) instead of
-#        1-stream Space-Time Block Coding (433.3 Mbps PHY = 294 Mbps TCP).
-#      - Uses `country='US'` to unlock 30 dBm (1,000 mW) regulatory ceiling and
-#        both UNII-1 (Ch 36) + UNII-3 (Ch 149) for VHT80 & VHT80P80.
-#   2. Pure WPA3-Personal (`encryption='sae'`, `ieee80211w='2'`, `sae_pwe='2'`)
-#      on 5 GHz with `ocv='0'` and `ieee80211r='0'` (cleanest hardware CCMP-128).
-#   3. Zero-Drop Laptop LAN (`proxy_arp='0'`, authoritative DHCP, MT7530 EEE off).
+#        2x2/4x4 Spatial Multiplexing (866.7 / 1733.3 Mbps PHY).
+#      - Uses `country='US'` to unlock 30 dBm regulatory ceiling and
+#        UNII-1 (Ch 36) + UNII-3 (Ch 149) for VHT80 & VHT80P80.
 # ===========================================================================
 
 [ -e /etc/nexrouter-release ] && . /etc/nexrouter-release
 
-echo "nexrouter: v3.8 Pure WPA3-SAE, VHT80P80 & Line-Rate provisioning (${NEXROUTER_VERSION:-3.8.0})"
+echo "nexrouter: v9.2 Zero-Freeze Handshake & Line-Rate provisioning (${NEXROUTER_VERSION:-9.2.0})"
 
 # 1. Firewall: Hardware + Software Flowtable Offload (MT7621 PPE)
 uci -q batch <<-EOF
@@ -32,6 +35,12 @@ uci -q batch <<-EOF
 	set firewall.@defaults[0].forward='REJECT'
 	commit firewall
 EOF
+
+# Stop bridger eBPF if installed so it never blackholes br-lan ARP/DHCP/EAPOL frames
+if [ -x /etc/init.d/bridger ]; then
+	/etc/init.d/bridger stop 2>/dev/null || true
+	/etc/init.d/bridger disable 2>/dev/null || true
+fi
 
 # 2. Network & Bridge: Packet Steering + Zero-Delay br-lan
 uci -q batch <<-EOF
@@ -110,14 +119,14 @@ if [ -d /www/nex ]; then
 	uci -q commit uhttpd
 fi
 
-# 5. Authoritative Instant DHCP for Laptops + Encrypted DNS-over-HTTPS (DoH)
+# 5. Authoritative Instant DHCP for Laptops & Wi-Fi (`nonwildcard=0` so DHCP never unbinds from br-lan!)
 uci -q batch <<-EOF
 	set dhcp.@dnsmasq[0].authoritative='1'
 	set dhcp.@dnsmasq[0].rapid_commit='1'
 	set dhcp.@dnsmasq[0].rebind_protection='1'
 	set dhcp.@dnsmasq[0].rebind_localhost='1'
 	set dhcp.@dnsmasq[0].localservice='1'
-	set dhcp.@dnsmasq[0].nonwildcard='1'
+	set dhcp.@dnsmasq[0].nonwildcard='0'
 	set dhcp.@dnsmasq[0].cachesize='4096'
 	set dhcp.@dnsmasq[0].min_cache_ttl='300'
 	set dhcp.@dnsmasq[0].negcache='1'
@@ -148,7 +157,7 @@ fi
 uci -q batch <<-EOF
 	set nexrouter.core.enabled='1'
 	set nexrouter.core.sqm_enabled='0'
-	set nexrouter.core.threaded_napi='1'
+	set nexrouter.core.threaded_napi='0'
 	set nexrouter.core.aql_txq_limit='5000'
 	set nexrouter.core.aql_threshold='24000'
 	set nexrouter.core.turbo_2g_vht='1'
@@ -167,6 +176,7 @@ uci -q batch <<-EOF
 	set nexrouter.core.doh_provider='cloudflare'
 	set nexrouter.roaming.enabled='1'
 	set nexrouter.roaming.ai_bandit='1'
+	set nexrouter.roaming.active_steer='0'
 	set nexrouter.roaming.obss_pd_spatial_reuse='1'
 	set nexrouter.roaming.thermal_guard='1'
 	set nexrouter.insight.enabled='1'
@@ -177,7 +187,7 @@ uci -q batch <<-EOF
 	commit nexrouter
 EOF
 
-# 8. Wireless: Pure WPA3-SAE on 5 GHz + Full 2x2/4x4 Spatial Multiplexing (tx_stbc=0) + US Regdomain (30 dBm + UNII-1/UNII-3)
+# 8. Wireless: Zero-Freeze WPA2/WPA3-Mixed (sae-mixed, ieee80211w=1, 4x EAPOL retries)
 [ -s /etc/config/wireless ] || wifi config 2>/dev/null || true
 
 for dev in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.radio[0-9]' | sort -u | cut -d. -f2); do
@@ -244,14 +254,22 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 	band="$(uci -q get wireless.$dev.band 2>/dev/null || echo '')"
 	if [ "$band" = "5g" ]; then
 		uci -q batch <<-EOF
+			set wireless.$iface.network='lan'
+			set wireless.$iface.mode='ap'
 			set wireless.$iface.ssid='NexRouter_5G'
-			set wireless.$iface.encryption='sae'
+			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
-			set wireless.$iface.ieee80211w='2'
+			set wireless.$iface.ieee80211w='1'
 			set wireless.$iface.sae_pwe='2'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wpa_group_rekey='86400'
-			set wireless.$iface.eapol_key_retries='1'
+			del wireless.$iface.eapol_key_retries
+			del wireless.$iface.sae_require_mfp
+			del wireless.$iface.mbo
+			del wireless.$iface.rnr
+			del wireless.$iface.bss_load_update_period
+			del wireless.$iface.chan_util_avg_period
+			del wireless.$iface.qos_map_set
 			set wireless.$iface.multicast_to_unicast='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -264,19 +282,15 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
-			set wireless.$iface.mbo='1'
-			set wireless.$iface.rnr='1'
-			set wireless.$iface.bss_load_update_period='50'
-			set wireless.$iface.chan_util_avg_period='300'
 			set wireless.$iface.rrm_neighbor_report='1'
 			set wireless.$iface.rrm_beacon_report='1'
 			set wireless.$iface.okc='1'
-			set wireless.$iface.sae_require_mfp='1'
-			set wireless.$iface.qos_map_set='0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56'
 			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	elif [ "$band" = "2g" ]; then
 		uci -q batch <<-EOF
+			set wireless.$iface.network='lan'
+			set wireless.$iface.mode='ap'
 			set wireless.$iface.ssid='NexRouter_2.4G'
 			set wireless.$iface.encryption='sae-mixed'
 			set wireless.$iface.key='12345678'
@@ -284,7 +298,13 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.sae_pwe='2'
 			set wireless.$iface.ocv='0'
 			set wireless.$iface.wpa_group_rekey='86400'
-			set wireless.$iface.eapol_key_retries='1'
+			del wireless.$iface.eapol_key_retries
+			del wireless.$iface.sae_require_mfp
+			del wireless.$iface.mbo
+			del wireless.$iface.rnr
+			del wireless.$iface.bss_load_update_period
+			del wireless.$iface.chan_util_avg_period
+			del wireless.$iface.qos_map_set
 			set wireless.$iface.multicast_to_unicast='0'
 			set wireless.$iface.wmm='1'
 			set wireless.$iface.uapsd='0'
@@ -297,15 +317,9 @@ for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_
 			set wireless.$iface.ieee80211k='1'
 			set wireless.$iface.ieee80211v='1'
 			set wireless.$iface.bss_transition='1'
-			set wireless.$iface.mbo='1'
-			set wireless.$iface.rnr='1'
-			set wireless.$iface.bss_load_update_period='50'
-			set wireless.$iface.chan_util_avg_period='300'
 			set wireless.$iface.rrm_neighbor_report='1'
 			set wireless.$iface.rrm_beacon_report='1'
 			set wireless.$iface.okc='1'
-			set wireless.$iface.sae_require_mfp='1'
-			set wireless.$iface.qos_map_set='0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56'
 			set wireless.$iface.disassoc_low_ack='0'
 		EOF
 	fi
@@ -320,5 +334,5 @@ done
 [ -x /usr/sbin/nexrouter-os-fix ] && /usr/sbin/nexrouter-os-fix all 2>/dev/null || true
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart 2>/dev/null || true
 
-echo "nexrouter: v3.8 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
+echo "nexrouter: v9.2 provisioning complete — open http://192.168.1.1/nex/ (no password required)"
 exit 0

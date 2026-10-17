@@ -83,7 +83,7 @@ PACKAGES_ADD=" \
   uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-luci \
   libubus libblobmsg-json jq curl ca-bundle ca-certificates \
   nlbwmon luci-lib-nixio \
-  kmod-nft-offload kmod-crypto-hw-eip93 kmod-crypto-authenc kmod-crypto-cmac kmod-crypto-ccm kmod-crypto-gcm kmod-crypto-sha256 kmod-crypto-hmac kmod-crypto-ecdh bridger kmod-nft-nat \
+  kmod-nft-offload kmod-crypto-hw-eip93 kmod-crypto-authenc kmod-crypto-cmac kmod-crypto-ccm kmod-crypto-gcm kmod-crypto-sha256 kmod-crypto-hmac kmod-crypto-ecdh kmod-nft-nat \
   kmod-ipt-conntrack kmod-ipt-raw kmod-nf-conntrack-netlink \
   kmod-sched-cake \
   kmod-tun kmod-wireguard wireguard-tools \
@@ -319,7 +319,7 @@ mkdir -p "$FILES/etc"
 cat > "$FILES/etc/nexrouter-release" <<EOF
 NEXROUTER_NAME="NexRouter OS"
 NEXROUTER_VERSION=$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)
-NEXROUTER_CODENAME="Apex-Quantum-Ising-Silicon-v9.1"
+NEXROUTER_CODENAME="Apex-Quantum-Ising-Silicon-v9.2"
 NEXROUTER_TARGET=$TARGET
 NEXROUTER_DEVICE=$PROFILE
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -343,7 +343,7 @@ make image \
 
 # Standardize binary name and checksum
 SYSUPGRADE_RAW="$(find "$OUT" -maxdepth 1 -name "*squashfs-sysupgrade.bin" ! -name "NexRouter-OS-*" | head -n 1)"
-V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "9.1.0")"
+V_TAG="$(cat "$ROOT/VERSION" 2>/dev/null || echo "9.2.0")"
 if [ -n "$SYSUPGRADE_RAW" ] && [ -f "$SYSUPGRADE_RAW" ]; then
   STANDARDIZED_NAME="NexRouter-OS-v${V_TAG}-ramips-mt7621-${PROFILE}-squashfs-sysupgrade.bin"
   cp -f "$SYSUPGRADE_RAW" "$OUT/$STANDARDIZED_NAME"

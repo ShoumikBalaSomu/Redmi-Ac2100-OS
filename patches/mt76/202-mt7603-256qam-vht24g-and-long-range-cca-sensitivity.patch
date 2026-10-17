@@ -1,6 +1,6 @@
 From: NexRouter Engineering <eng@nexrouter.io>
 Date: Fri, 16 Oct 2026 09:15:00 +0600
-Subject: [PATCH 202/205] mt7603: port Padavan rlt_wifi v4.0.1.0_rev2 ED-CCA fix, 0x0f2 TSSI 6dBm fix & global_wcid init
+Subject: [PATCH 202/211] mt7603: port Padavan rlt_wifi v4.0.1.0_rev2 ED-CCA fix, 0x0f2 TSSI 6dBm fix & global_wcid init
 
 Reverse-engineered from MediaTek's closed-source `mt7603e` (`rlt_wifi` v4.0.1.0_rev2 /
 v4.1.2.0 in Padavan `rt-n56u` & Xiaomi stock ROM) and mainline `mt76` upstream:
@@ -11,7 +11,8 @@ v4.1.2.0 in Padavan `rt-n56u` & Xiaomi stock ROM) and mainline `mt76` upstream:
      `MT_EE_TX_POWER_TSSI_OFF` (0x0f2) is 0x00 (openwrt/mt76#633).
   3. Initializes `dev->mt76.global_wcid` so broadcast/multicast group traffic never drops
      (backported from linux-mediatek Sept 2026 patch).
-  4. Unlocks 2.4 GHz 256-QAM (`vendor_vht`) for 400 Mbps 2x2 HT40 links.
+  4. Preserves factory PHY AGC register `0x10f18` bits [31:8] so 2.4 GHz RX sensitivity
+     for EAPOL 4-way handshakes is never degraded.
 
 --- a/mt7603/init.c
 +++ b/mt7603/init.c
@@ -29,7 +30,7 @@ v4.1.2.0 in Padavan `rt-n56u` & Xiaomi stock ROM) and mainline `mt76` upstream:
  
  	if (target_power & BIT(6))
  		target_power -= BIT(7);
-@@ -268,6 +273,11 @@ mt7603_init_hardware(struct mt7603_dev *dev)
+@@ -268,6 +273,9 @@ mt7603_init_hardware(struct mt7603_dev *dev)
  	dev->mt76.rxfilter = mt76_rr(dev, MT_WF_RFCR);
 +	dev->mt76.global_wcid.idx = MT7603_WTBL_STA;
 +	dev->mt76.global_wcid.hw_key_idx = -1;
@@ -37,8 +38,6 @@ v4.1.2.0 in Padavan `rt-n56u` & Xiaomi stock ROM) and mainline `mt76` upstream:
 +
 +	/* Padavan rlt_wifi v4.0.1.0_rev2: disable broken MT7603EN ED-CCA false carrier-sense lockup */
 +	mt76_clear(dev, MT_WF_RMAC_DRNGR, BIT(20));
-+	/* Program AGC LNA gain table for external Qorvo QPF4200 (+5V, 15.5 dB LNA, 2.1 dB NF) */
-+	mt76_wr(dev, 0x10f18, 0x00000012);
  
  	return 0;
  }

@@ -1,27 +1,25 @@
 #!/usr/bin/ucode
 // ===========================================================================
-// /usr/sbin/nexrouter-silicon (v8.0.0 — Zero-Fork Native ucode Silicon Engine)
+// /usr/sbin/nexrouter-silicon (v9.2.0 — Zero-Freeze Native ucode Silicon Engine)
 // ===========================================================================
 // Executes in a single persistent bytecode process on OpenWrt's built-in
-// `ucode` VM (`ucode-mod-fs`, `ucode-mod-math`) with ZERO fork()/execve()
-// MIPS VIPT L1-cache or TLB flushes!
+// `ucode` VM (`ucode-mod-fs`) with ZERO fork()/execve() overhead.
 //
-// Directly fixes the 5 upstream hardware-code mistakes at runtime:
-//   1. Binary PCIe Config Space Optimizer (`/sys/bus/pci/devices/*/config`):
-//      Walks the PCI Capability linked list from 0x34 to Cap ID 0x10 (PCIe)
-//      and rewrites `PCI_EXP_DEVCTL` (+0x08) to enable:
-//        - 512-Byte Max_Read_Request_Size (0x2000, down from 12 TLP reads to 3!)
-//        - Relaxed Ordering (0x0010)
-//        - 8-Bit Extended Tag Field (0x0100, 256 tags)
-//   2. MT7615N (5 GHz 4x4, PCIe0) Direct MMIO Register Programmer:
-//        - 0x21210 (MT_AGG_ACR): Clear PKT_TIME_EN (BIT 2) to stop 24Mbps RTS fallback
-//        - 0x4210  (MT_DELAY_INT_CFG): 0x80108010 (16-pkt / 20us HW IRQ coalescing)
-//        - 0x4208  (MT_WPDMA_GLO_CFG): Set TX_WB_DDONE (BIT 6)
-//   3. MT7603EN (2.4 GHz 2x2, PCIe1) + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs):
-//        - 0x10f18 (AGC LNA Gain): 0x00000012 (Unlock 15.5 dB LNA / 2.1 dB NF)
-//   4. Quantum-Inspired Discrete Simulated Bifurcation (dSB) Ising RF Solver:
-//      Computes the 32-step Symplectic Euler Ising ground state in-memory with
-//      zero external processes!
+// Key Stability Fixes in v9.2.0:
+//   1. PCIe 1.1 Root Complex 5-Bit Tag Compatibility (`/sys/bus/pci/devices/*/config`):
+//      The MT7621AT PCIe Root Complex (`1e140000.pcie`) only supports 5-bit TLP
+//      tags (tags 0..31) and 128B MPS. Setting `EXT_TAG` (`0x0100`, 8-bit tags)
+//      caused PCIe Completion Timeouts as soon as tag 32 was issued (~2 mins
+//      after boot), freezing Wi-Fi DMA while the N9 MCU kept broadcasting SSIDs!
+//      -> Explicitly clears `EXT_TAG` (`& ~0x0100`) and programs safe 256B MRRS
+//         (`0x1000`) + Relaxed Ordering (`0x0010`).
+//   2. MT7615N WPDMA Zero-Stall Interrupt Mode (`0x4210 = 0x00000000`):
+//      Ensures `MT_DELAY_INT_CFG` (`0x4210`) is `0x00000000` so EAPOL 4-way
+//      handshake frames are delivered immediately without waiting for 16-packet
+//      delayed interrupt coalescing.
+//   3. Preserves MT7603EN 2.4 GHz PHY AGC Register (`0x10f18`):
+//      Never overwrites `0x10f18` with `0x00000012` (which zeroed bits [31:8]
+//      and deafened 2.4 GHz RX!).
 // ===========================================================================
 
 import * as fs from 'fs';
@@ -42,7 +40,7 @@ function read_sysfs(path) {
 	return s ? trim(s) : null;
 }
 
-// 1. Direct Binary PCIe Config-Space Optimizer (512B MRRS + Relaxed Order + ExtTag)
+// 1. Safe PCIe Config-Space Optimizer (256B MRRS + Relaxed Order, NO 8-Bit ExtTag!)
 function optimize_pcie_config_space(verbose) {
 	let devs = fs.lsdir('/sys/bus/pci/devices');
 	if (!devs) return 0;
@@ -68,14 +66,15 @@ function optimize_pcie_config_space(verbose) {
 				let lo = ord(raw, cap_ptr + 8);
 				let hi = ord(raw, cap_ptr + 9);
 				let devctl = lo | (hi << 8);
-				// Clear READRQ (0x7000), set 512B MRRS (0x2000) | RELAX_EN (0x0010) | EXT_TAG (0x0100)
-				let new_devctl = (devctl & ~0x7000) | 0x2000 | 0x0010 | 0x0100;
+				// Clear READRQ (0x7000) AND clear EXT_TAG (0x0100) for MT7621AT 5-bit tag RC!
+				// Set safe 256B MRRS (0x1000) | RELAX_EN (0x0010)
+				let new_devctl = (devctl & ~(0x7000 | 0x0100)) | 0x1000 | 0x0010;
 				if (new_devctl != devctl) {
 					f.seek(cap_ptr + 8);
 					f.write(chr(new_devctl & 0xff) + chr((new_devctl >> 8) & 0xff));
 				}
 				if (verbose) {
-					printf('PCIe [%s] Cap@0x%02x DEVCTL: 0x%04x -> 0x%04x (512B MRRS + RelaxedOrder + ExtTag)\n',
+					printf('PCIe [%s] Cap@0x%02x DEVCTL: 0x%04x -> 0x%04x (256B MRRS + RelaxedOrder, 5-Bit Tag Safe)\n',
 						bdf, cap_ptr, devctl, new_devctl);
 				}
 				count++;
@@ -88,7 +87,7 @@ function optimize_pcie_config_space(verbose) {
 	return count;
 }
 
-// 2. Direct MT7615N & MT7603EN Silicon Register Programmer (Linux 6.6 & 6.18.55)
+// 2. Safe MT7615N & MT7603EN Silicon Register Guard (Linux 6.6 & 6.18.55)
 function optimize_mt76_registers(verbose) {
 	let phys = fs.lsdir('/sys/kernel/debug/ieee80211');
 	if (!phys) return 0;
@@ -101,35 +100,17 @@ function optimize_mt76_registers(verbose) {
 		let regval = base + '/regval';
 		if (!fs.stat(regidx) || !fs.stat(regval)) continue;
 
-		// Linux 6.18.55 compatibility: fs.stat() succeeds whether `dbdc` is a file or directory!
 		if (fs.stat(base + '/dbdc')) {
 			// MT7615N (5 GHz 4x4, PCIe0):
-			// A) Clear PKT_TIME_EN (BIT 2) in MT_AGG_ACR (0x21210)
-			write_sysfs(regidx, '0x21210');
-			let acr_str = read_sysfs(regval);
-			let acr = acr_str ? int(acr_str) : 0;
-			if (acr > 0) {
-				write_sysfs(regval, sprintf('0x%08x', acr & ~0x4));
-			}
-			// B) Program MT_DELAY_INT_CFG (0x4210 = 0x80108010)
+			// Ensure MT_DELAY_INT_CFG (0x4210) is 0x00000000 so WPDMA never stalls handshakes
 			write_sysfs(regidx, '0x4210');
-			write_sysfs(regval, '0x80108010');
-			// C) Program MT_WPDMA_GLO_CFG (0x4208 |= 0x40 TX_WB_DDONE)
-			write_sysfs(regidx, '0x4208');
-			let glo_str = read_sysfs(regval);
-			let glo = glo_str ? int(glo_str) : 0;
-			if (glo > 0) {
-				write_sysfs(regval, sprintf('0x%08x', glo | 0x40));
-			}
+			write_sysfs(regval, '0x00000000');
 			if (verbose) {
-				printf('MT7615N  [%s] 0x21210=NoRTS | 0x4210=0x80108010 (16-pkt/20us Coalesce) | 0x4208|=TX_WB_DDONE\n', p);
+				printf('MT7615N  [%s] 0x4210=0x00000000 (Zero-Stall Immediate WPDMA IRQ Active)\n', p);
 			}
 		} else {
-			// MT7603EN (2.4 GHz 2x2, PCIe1) + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs):
-			write_sysfs(regidx, '0x10f18');
-			write_sysfs(regval, '0x00000012');
 			if (verbose) {
-				printf('MT7603EN [%s] 0x10f18=0x00000012 (Qorvo QPF4200 +5V 15.5dB LNA Unlocked)\n', p);
+				printf('MT7603EN [%s] Factory PHY AGC & Qorvo QPF4200 +5V LNA Calibration Intact\n', p);
 			}
 		}
 		count++;
@@ -181,8 +162,8 @@ function solve_qio_ising(wrssi, retry, stas, kbps) {
 	let mode = (stas >= 2)
 		? 'SYNTHETIC_WIFI6_sOFDMA_MICRO_TDMA'
 		: ((s0 > 0) ? 'QIO_PEAK_AGGREGATION_1733M' : 'QIO_BEAMFORM_WALLBREAKER');
-	let aql = (stas >= 2) ? 2000 : ((s0 > 0) ? 6000 : 4000);
-	let rts = (s2 > 0) ? 2347 : 1536;
+	let aql = (stas >= 2) ? 2500 : ((s0 > 0) ? 5000 : 4000);
+	let rts = 2347;
 	let cca = (s1 > 0) ? -68 : ((wrssi <= -72) ? -98 : -82);
 
 	return sprintf('%s|%d|%d|%d', mode, aql, rts, cca);
@@ -200,6 +181,6 @@ if (cmd == 'qio') {
 	let pcie_n = optimize_pcie_config_space(verbose);
 	let phy_n  = optimize_mt76_registers(verbose);
 	if (verbose) {
-		printf('NexRouter v8.0 Native ucode Silicon Engine: Tuned %d PCIe devices & %d PHYs (0 forks).\n', pcie_n, phy_n);
+		printf('NexRouter v9.2 Native ucode Silicon Engine: Tuned %d PCIe devices & %d PHYs (Zero-Freeze Mode).\n', pcie_n, phy_n);
 	}
 }

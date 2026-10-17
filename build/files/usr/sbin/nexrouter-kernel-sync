@@ -1,31 +1,14 @@
 #!/bin/sh
 # ===========================================================================
-# /usr/sbin/nexrouter-kernel-sync (v9.1.0 — Kernel <-> Hardware <-> OS Sync)
+# /usr/sbin/nexrouter-kernel-sync (v9.2.0 — Zero-Stall Kernel <-> Hardware Sync)
 # ===========================================================================
 # Synchronizes the running Linux Kernel (6.6 / 6.18.55) with the physical
 # MT7621AT + MT7530 + MT7615N + MT7603EN silicon and OpenWrt HyperOS layer:
-#
-#   1. NAPI & GRO Packet Batching Sync (`gro_normal_batch=16`, `dev_weight=256`,
-#      `netdev_budget=1000`):
-#      Matches kernel softirq batching to our 16-packet WPDMA hardware IRQ
-#      coalescing (`0x4210 = 0x80108010`), cutting MIPS 1004Kc I-cache misses
-#      in half across `mtk_eth -> nf_flowtable -> mt7615e`.
-#
-#   2. Physical-Core L1 D-Cache Coherent XPS (Transmit Packet Steering) Sync:
-#      Pins TX queue `xps_cpus` to the exact same physical MIPS 1004Kc core that
-#      services each device's GIC hardware IRQ:
-#        - Wired (`eth0`, `wan`, `lan1..3`) -> Physical Core 0 (`mask 3`: VPE0+VPE1)
-#        - Wireless (`phy0-ap0`, `phy1-ap0`) -> Physical Core 1 (`mask c`: VPE2+VPE3)
-#      Prevents cross-core L1 cacheline invalidations through the Coherency Manager!
-#
-#   3. TCP BBR & 64-MPDU A-MPDU Aggregation Buffer Sync:
-#      Raises `tcp_limit_output_bytes=1048576` (1 MiB) and `tcp_notsent_lowat=131072`
-#      so a single socket never starves the MT7615N Cortex-R4 4,096-token WA ring.
-#
-#   4. Atomic DMA Memory Reserve & ZRAM Page-Allocator Sync:
-#      Configures `vm.min_free_kbytes=4096` and `vm.watermark_scale_factor=125`
-#      so `GFP_ATOMIC` sk_buff allocations in `mtk_poll_rx` and `mt76_dma_rx_fill`
-#      never fail under 800+ Mbps burst load on 128 MiB DDR3.
+#   - Sets `busy_poll=0` and `busy_read=0` so `hostapd` (WPA 4-way handshake)
+#     and `dnsmasq` (DHCP handshake) never busy-spin or deadlock on NAPI locks!
+#   - Pins Wired TX (`xps_cpus=3`) to Physical Core 0 and Wi-Fi TX (`xps_cpus=c`)
+#     to Physical Core 1 for L1 D-Cache coherency.
+#   - Reserves 4 MiB atomic DMA memory (`vm.min_free_kbytes=4096`) on 128 MiB DDR3.
 # ===========================================================================
 
 log() { logger -t nexrouter-kernel-sync -- "$*"; }
@@ -39,14 +22,15 @@ r_sys() {
 }
 
 sync_kernel_net_and_gro_batching() {
-	w_sys /proc/sys/net/core/gro_normal_batch 16
-	w_sys /proc/sys/net/core/dev_weight 256
+	w_sys /proc/sys/net/core/gro_normal_batch 8
+	w_sys /proc/sys/net/core/dev_weight 64
 	w_sys /proc/sys/net/core/dev_weight_rx_bias 1
 	w_sys /proc/sys/net/core/dev_weight_tx_bias 1
-	w_sys /proc/sys/net/core/netdev_budget 1000
+	w_sys /proc/sys/net/core/netdev_budget 600
 	w_sys /proc/sys/net/core/netdev_max_backlog 10000
-	w_sys /proc/sys/net/core/busy_poll 50
-	w_sys /proc/sys/net/core/busy_read 50
+	# CRITICAL: Keep busy_poll=0 and busy_read=0 so hostapd/dnsmasq never spin-lock NAPI!
+	w_sys /proc/sys/net/core/busy_poll 0
+	w_sys /proc/sys/net/core/busy_read 0
 }
 
 sync_kernel_tcp_bbr_and_ampdu_pipeline() {
@@ -67,10 +51,8 @@ sync_kernel_xps_and_l1_cache_coherency() {
 			[ -w "$txq" ] || continue
 			case "$d" in
 				eth0|wan|pppoe-wan|lan1|lan2|lan3)
-					# Pin Wired TX to Physical Core 0 (VPE0+VPE1 = 0x3) matching GMAC IRQ on VPE1
 					printf '3' > "$txq" 2>/dev/null || true ;;
 				phy*-ap*|wlan*|ra*|rai*)
-					# Pin Wi-Fi TX to Physical Core 1 (VPE2+VPE3 = 0xc) matching MT7615N/MT7603EN IRQs
 					printf 'c' > "$txq" 2>/dev/null || true ;;
 			esac
 		done
@@ -89,9 +71,9 @@ dump_status() {
 	cat <<JSON
 {
   "kernel_release": "$(uname -r 2>/dev/null)",
-  "gro_normal_batch": $(r_sys /proc/sys/net/core/gro_normal_batch 16),
-  "dev_weight": $(r_sys /proc/sys/net/core/dev_weight 256),
-  "netdev_budget": $(r_sys /proc/sys/net/core/netdev_budget 1000),
+  "gro_normal_batch": $(r_sys /proc/sys/net/core/gro_normal_batch 8),
+  "dev_weight": $(r_sys /proc/sys/net/core/dev_weight 64),
+  "netdev_budget": $(r_sys /proc/sys/net/core/netdev_budget 600),
   "tcp_limit_output_bytes": $(r_sys /proc/sys/net/ipv4/tcp_limit_output_bytes 1048576),
   "tcp_notsent_lowat": $(r_sys /proc/sys/net/ipv4/tcp_notsent_lowat 131072),
   "vm_min_free_kbytes": $(r_sys /proc/sys/vm/min_free_kbytes 4096),
@@ -111,6 +93,6 @@ case "${1:-all}" in
 		sync_kernel_tcp_bbr_and_ampdu_pipeline
 		sync_kernel_xps_and_l1_cache_coherency
 		sync_kernel_vm_and_dma_watermarks
-		log "Kernel <-> Hardware <-> OS synchronized (gro_batch=16, dev_weight=256, budget=1000, tcp_limit=1MB, Core0/Core1 XPS)"
+		log "Kernel <-> Hardware <-> OS synchronized (busy_poll=0, dev_weight=64, budget=600, tcp_limit=1MB, Core0/Core1 XPS)"
 		;;
 esac

@@ -1,19 +1,21 @@
 #!/bin/sh
 # ===========================================================================
-# 30-nexrouter-lan-heal (v3.6) — MT7530 Gigabit Switch & Laptop LAN Healer
+# 30-nexrouter-lan-heal (v9.2) — MT7530 Gigabit Switch & Laptop LAN Healer
 # ===========================================================================
 # Prevents laptop LAN connection blocks on lan1/lan2/lan3 by:
 #   1. Disabling 802.3az Energy Efficient Ethernet (EEE / Low-Power Idle) on
 #      MT7530 switch PHYs (fixes Realtek/Intel laptop NIC link-flap & no-IP bugs).
 #   2. Disabling bridge neighbor/ARP suppression (`neigh_suppress=0`) on br-lan
 #      ports so DHCP and ARP broadcasts are never eaten by hostapd snooping.
-#   3. Lowering br-lan MAC ageing time to 30s (from 300s) and flushing failed
-#      neighbor entries when a laptop switches between Wi-Fi and Wired LAN.
+#   3. Maintaining standard 300s (`30000` USER_HZ) br-lan MAC ageing time so
+#      PPE flowtable entries never desynchronize from br-lan FDB state.
+#   4. Re-attaching any detached wireless AP interfaces (`phy0-ap0`, `phy1-ap0`)
+#      to `br-lan` so SSID broadcasts always complete DHCP/LAN handshakes.
 # ===========================================================================
 
 dev="${DEVICENAME:-$INTERFACE}"
 case "$dev" in
-	lan*|br-lan|eth0|wan) ;;
+	lan*|br-lan|eth0|wan|phy*-ap*|wlan*) ;;
 	*) exit 0 ;;
 esac
 
@@ -23,14 +25,26 @@ if command -v ethtool >/dev/null 2>&1; then
 		[ -d "/sys/class/net/$p" ] || continue
 		ethtool --set-eee "$p" eee off 2>/dev/null || true
 	done
+	[ -d /sys/class/net/eth0 ] && ethtool -A eth0 rx on tx on 2>/dev/null || true
 fi
 
-# 2. Ensure br-lan never suppresses ARP/DHCP or delays port forwarding
+# 2. Ensure br-lan never suppresses ARP/DHCP or expires MACs prematurely (30000 = 300s)
 if [ -d /sys/class/net/br-lan/bridge ]; then
 	printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
 	printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
-	printf '3000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
+	printf '30000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
 	printf '0' > /sys/class/net/br-lan/bridge/multicast_snooping 2>/dev/null || true
+fi
+
+# 3. Ensure wireless AP interfaces are enslaved to br-lan
+if [ -d /sys/class/net/br-lan ]; then
+	for ap_if in /sys/class/net/phy*-ap* /sys/class/net/wlan*; do
+		[ -d "$ap_if" ] || continue
+		ap_name="$(basename "$ap_if")"
+		if [ ! -e "/sys/class/net/br-lan/brif/$ap_name" ]; then
+			ip link set "$ap_name" master br-lan 2>/dev/null || true
+		fi
+	done
 fi
 
 for bp in /sys/class/net/br-lan/brif/*; do
@@ -39,12 +53,13 @@ for bp in /sys/class/net/br-lan/brif/*; do
 	[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
 done
 
-# 3. Clear virtual DSA slave RPS so LAN packets aren't bounced across VPEs 3 times
+# 4. Clear virtual DSA slave RPS so LAN packets aren't bounced across VPEs 3 times
 for vdev in lan1 lan2 lan3 br-lan; do
-	[ -w "/sys/class/net/$vdev/queues/rx-0/rps_cpus" ] && 		printf '0' > "/sys/class/net/$vdev/queues/rx-0/rps_cpus" 2>/dev/null || true
+	[ -w "/sys/class/net/$vdev/queues/rx-0/rps_cpus" ] && \
+		printf '0' > "/sys/class/net/$vdev/queues/rx-0/rps_cpus" 2>/dev/null || true
 done
 
-# 4. Flush stale/failed ARP entries on br-lan so a newly plugged laptop connects in 0ms
+# 5. Flush stale/failed ARP entries on br-lan so a newly plugged laptop connects in 0ms
 ip neigh flush dev br-lan nud failed 2>/dev/null || true
 ip neigh flush dev br-lan nud incomplete 2>/dev/null || true
 exit 0

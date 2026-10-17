@@ -1,56 +1,41 @@
 #!/bin/sh
 # ===========================================================================
-# /usr/sbin/nexrouter-os-fix (v9.0.0 — HyperOS Bug Fixer & Software Hardware)
+# /usr/sbin/nexrouter-os-fix (v9.2.0 — HyperOS Bug Fixer & Software Hardware)
 # ===========================================================================
-# Fixes 4 fundamental OpenWrt OS bugs and synthesizes 3 "Impossible Hardware"
-# capabilities in software + silicon:
-#
-#   1. Fundamental OpenWrt Bug #1 (`mac80211.sh` Silent Config Stripper):
-#      Stock OpenWrt `/lib/netifd/wireless/mac80211.sh` silently ignores
-#      `vendor_vht=1` on 2.4 GHz HT40 unless VHT capabilities are forced, and
-#      omits `bss_load_update_period` and `VHT80P80` center-segment-1.
-#      -> Auto-patches `mac80211.sh` idempotently so 2.4 GHz 256-QAM (400 Mbps),
-#         Wi-Fi 6 MBO/RNR BSS-Load, and 5 GHz VHT80P80 always reach hostapd!
-#
-#   2. Fundamental OpenWrt Bug #2 (`fw4` Offload MSS Blackhole & Missing NPU):
-#      Creates `table inet nexrouter_hyperos` in kernel `nftables`:
-#      - Clamps TCP SYN/SYN-ACK MSS to Path MTU *before* PPE/software flowtable
-#        offload so PPPoE and asymmetric WAN->Wi-Fi flows never stall.
-#      - Synthesizes a Zero-CPU Kernel Game & VoIP NPU (`NexPulse`): promotes
-#        interactive UDP/TCP/DNS/ACK packets (<= 180 bytes) to `DSCP EF (46)`
-#        (`WMM AC_VO` hardware voice queue) while marking bulk transfers
-#        (> 8 MiB, > 1200B) as `DSCP CS1`, giving 0 ms gaming jitter under load.
-#
-#   3. Software-Defined Hardware #1 (`NexVault` Virtual USB Flash + RAM Drive):
-#      Synthesizes a dual-tier storage drive on boards without a physical USB port:
-#      - `/etc/nexvault` : Persistent UBIFS Flash Vault (survives sysupgrade!)
-#      - `/tmp/nexdrive` : 400+ MB/s Compressed ZRAM/tmpfs High-Speed RAM Drive
-#      - Exposed at `/www/nexvault` (`http://192.168.1.1/nexvault/`) and in
-#        LuCI File Manager (`/cgi-bin/luci/admin/system/filemanager`).
-#
-#   4. Fundamental OpenWrt Bug #3 (DNSmasq IPv6 AAAA Stall & Local Domain):
-#      - Registers `nex.router` and `my.router` -> LAN IP (`192.168.1.1`)
-#      - Supports 1-click `filter_aaaa` to eliminate 2-second browser stalls
-#        on IPv4-only ISP connections.
+# Fixes fundamental OpenWrt OS bugs and synthesizes Software-Defined Hardware:
+#   1. Clean `mac80211.sh` VHT80P80 & 2.4G `vendor_vht` support (never injects
+#      duplicate `bss_load_update_period`/`chan_util_avg_period` lines that can
+#      stall or reject `hostapd` reloads).
+#   2. `NexPulse` Kernel `nftables` NPU: Pre-offload TCP SYN MSS clamping +
+#      Zero-Jitter DSCP prioritization (`UDP<=220B -> EF`, `TCP<=160B -> CS6`).
+#   3. `NexVault` Virtual USB Flash (`/etc/nexvault`) & RAM Drive (`/tmp/nexdrive`).
+#   4. `DNSmasq` Zero-Drop DHCP binding (`nonwildcard=0`) + `nex.router` domain.
 # ===========================================================================
 
 log() { logger -t nexrouter-os-fix -- "$*"; }
 
-# 1. Patch OpenWrt's /lib/netifd/wireless/mac80211.sh so hardware features are never stripped
+# 1. Cleanly patch /lib/netifd/wireless/mac80211.sh without duplicate hostapd BSS options
 fix_openwrt_mac80211_netifd_bugs() {
 	local mac_sh="/lib/netifd/wireless/mac80211.sh"
 	[ -f "$mac_sh" ] || return 0
 
-	# Ensure VHT80P80 & vendor_vht 2.4G 256-QAM patch is applied
-	if ! grep -q "NEXROUTER_HYPEROS_MAC80211" "$mac_sh" 2>/dev/null; then
-		cp -f "$mac_sh" "${mac_sh}.orig" 2>/dev/null || true
-		sed -i '/config_add_int .*channel/a \	config_add_string channel2\n\	config_add_boolean vendor_vht' "$mac_sh" 2>/dev/null || true
-		sed -i 's/json_get_vars channel /json_get_vars channel channel2 vendor_vht /g' "$mac_sh" 2>/dev/null || true
+	# If an older patch injected duplicate bss_load_update_period/chan_util_avg_period, restore .orig first
+	if grep -q "chan_util_avg_period=600" "$mac_sh" 2>/dev/null && [ -f "${mac_sh}.orig" ]; then
+		cp -f "${mac_sh}.orig" "$mac_sh" 2>/dev/null || true
+	fi
+
+	if ! grep -q "NEXROUTER_HYPEROS_MAC80211_V92" "$mac_sh" 2>/dev/null; then
+		[ -f "${mac_sh}.orig" ] || cp -f "$mac_sh" "${mac_sh}.orig" 2>/dev/null || true
+		sed -i '/bss_load_update_period=50/d; /chan_util_avg_period=600/d' "$mac_sh" 2>/dev/null || true
+		if ! grep -q "config_add_string channel2" "$mac_sh" 2>/dev/null; then
+			sed -i '/config_add_int .*channel/a \	config_add_string channel2\n\	config_add_boolean vendor_vht' "$mac_sh" 2>/dev/null || true
+			sed -i 's/json_get_vars channel /json_get_vars channel channel2 vendor_vht /g' "$mac_sh" 2>/dev/null || true
+		fi
 
 		awk '
 		/vht_oper_chwidth=/ && !done_vht {
 			print $0
-			print "\t\t# NEXROUTER_HYPEROS_MAC80211: VHT80P80 + 2.4GHz 256-QAM vendor_vht enforcement"
+			print "\t\t# NEXROUTER_HYPEROS_MAC80211_V92: VHT80P80 support"
 			print "\t\tif [ \"$htmode\" = \"VHT80P80\" ]; then"
 			print "\t\t\tvht_oper_chwidth=3"
 			print "\t\t\tvht_center_seg0=155"
@@ -63,17 +48,10 @@ fix_openwrt_mac80211_netifd_bugs() {
 			done_vht=1
 			next
 		}
-		/hostapd_set_bss_options/ && !done_bss {
-			print $0
-			print "\tappend bss_conf \"bss_load_update_period=50\" \"$N\""
-			print "\tappend bss_conf \"chan_util_avg_period=600\" \"$N\""
-			done_bss=1
-			next
-		}
 		{ print $0 }
 		' "$mac_sh" > "${mac_sh}.new" && mv -f "${mac_sh}.new" "$mac_sh"
 		chmod 0755 "$mac_sh"
-		log "Patched OpenWrt mac80211.sh: unlocked 2.4G vendor_vht, Wi-Fi 6 BSS-Load, and VHT80P80"
+		log "Verified clean OpenWrt mac80211.sh (VHT80P80 + 2.4G vendor_vht, zero duplicate BSS options)"
 	fi
 }
 
@@ -86,7 +64,6 @@ configure_nexpulse_kernel_npu() {
 	nft delete table inet nexrouter_hyperos 2>/dev/null || true
 
 	if [ "$game_en" != "1" ]; then
-		# Even with game_accel off, keep pre-offload Path-MTU MSS clamping active to fix OpenWrt fw4 PPPoE bug
 		nft -f - 2>/dev/null <<-'NFTEOF' || true
 			table inet nexrouter_hyperos {
 				chain mangle_forward {
@@ -103,21 +80,11 @@ configure_nexpulse_kernel_npu() {
 		table inet nexrouter_hyperos {
 			chain mangle_forward {
 				type filter hook forward priority mangle; policy accept;
-
-				# 1. Fix OpenWrt fw4 asymmetric flowtable MTU blackhole before PPE offload
 				tcp flags syn tcp option maxseg size set rt mtu
-
-				# 2. NexPulse Software NPU: Promote small UDP gaming/VoIP/DNS/QUIC-handshake frames (<= 220B)
-				#    directly to DSCP EF (46) -> Hardware WMM AC_VO (0.5ms contention window)
 				ip protocol udp meta length <= 220 ip dscp set ef counter
 				ip6 nexthdr udp meta length <= 220 ip6 dscp set ef counter
-
-				# 3. Promote interactive TCP SYN/ACK/FIN/RST & small SSH/Gaming control frames (<= 160B)
 				ip protocol tcp meta length <= 160 ip dscp set cs6 counter
 				ip6 nexthdr tcp meta length <= 160 ip6 dscp set cs6 counter
-
-				# 4. Demote heavy elephant bulk downloads (> 8 MiB transferred, packet > 1200B) to CS1
-				#    so 700+ Mbps downloads never cause head-of-line latency for gaming/voice
 				ct bytes > 8388608 meta length > 1200 ip dscp set cs1 counter
 				ct bytes > 8388608 meta length > 1200 ip6 dscp set cs1 counter
 			}
@@ -137,10 +104,6 @@ configure_nexvault_virtual_usb() {
 			========================================================================
 			NexVault Virtual USB Storage (Software-Defined Flash & RAM Drive)
 			========================================================================
-			Even though the Xiaomi Redmi Router AC2100 has no physical USB port routed
-			on its PCB, NexRouter synthesizes two storage drives using the board's
-			117.5 MiB UBIFS NAND partition and 64 MiB LZ4-compressed ZRAM:
-
 			  1. /etc/nexvault  — Persistent Flash Vault (survives reboots & sysupgrades!)
 			  2. /tmp/nexdrive  — High-Speed Compressed RAM Drive (400+ MB/s scratch space)
 
@@ -162,11 +125,18 @@ configure_nexvault_virtual_usb() {
 	log "NexVault Virtual USB active: /etc/nexvault (Persistent UBIFS) + /tmp/nexdrive (High-Speed RAM Disk)"
 }
 
-# 4. Fix DNSmasq Concurrency, Local Router Domains (`nex.router`), and Optional IPv6 AAAA Filter
+# 4. Fix DNSmasq Zero-Drop DHCP Binding (`nonwildcard=0`), Local Router Domains (`nex.router`), and Optional IPv6 AAAA Filter
 configure_dns_and_local_domains() {
 	local filter_aaaa lan_ip changed=0
 	filter_aaaa="$(uci -q get nexrouter.core.filter_aaaa 2>/dev/null || echo 0)"
 	lan_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || echo 192.168.1.1)"
+
+	# CRITICAL: Ensure nonwildcard=0 so dnsmasq never unbinds from br-lan during interface events!
+	if [ "$(uci -q get dhcp.@dnsmasq[0].nonwildcard 2>/dev/null)" != "0" ]; then
+		uci -q set "dhcp.@dnsmasq[0].nonwildcard=0"
+		uci -q set "dhcp.lan.force=1"
+		changed=1
+	fi
 
 	if [ "$(uci -q get dhcp.@dnsmasq[0].filter_aaaa 2>/dev/null)" != "$filter_aaaa" ]; then
 		uci -q set "dhcp.@dnsmasq[0].filter_aaaa=$filter_aaaa"
@@ -199,11 +169,11 @@ case "${1:-all}" in
 		configure_dns_and_local_domains
 		;;
 	status)
-		echo "=== NexRouter v9.0 HyperOS Bug-Fix & Software-Defined Hardware Status ==="
-		echo "1. OpenWrt mac80211.sh Fix : $(grep -q 'NEXROUTER_HYPEROS_MAC80211' /lib/netifd/wireless/mac80211.sh 2>/dev/null && echo 'PATCHED (vendor_vht + BSS-Load + VHT80P80)' || echo 'PENDING')"
+		echo "=== NexRouter v9.2 HyperOS Bug-Fix & Software-Defined Hardware Status ==="
+		echo "1. OpenWrt mac80211.sh Fix : $(grep -q 'NEXROUTER_HYPEROS_MAC80211' /lib/netifd/wireless/mac80211.sh 2>/dev/null && echo 'CLEAN (vendor_vht + VHT80P80)' || echo 'STANDARD')"
 		echo "2. NexPulse Kernel NPU     : $(nft list table inet nexrouter_hyperos >/dev/null 2>&1 && echo 'ACTIVE (Zero-Jitter DSCP EF + Pre-Offload MSS Clamp)' || echo 'INACTIVE')"
 		echo "3. NexVault Virtual USB    : /etc/nexvault ($(df -h /etc 2>/dev/null | awk 'NR==2 {print $4}') free flash) + /tmp/nexdrive ($(df -h /tmp 2>/dev/null | awk 'NR==2 {print $4}') free RAM)"
-		echo "4. Local Router Domains    : http://nex.router/nex/ & http://my.router/ (filter_aaaa=$(uci -q get nexrouter.core.filter_aaaa 2>/dev/null || echo 0))"
+		echo "4. Local Router Domains    : http://nex.router/nex/ & http://my.router/ (nonwildcard=0, filter_aaaa=$(uci -q get nexrouter.core.filter_aaaa 2>/dev/null || echo 0))"
 		;;
 	*)
 		fix_openwrt_mac80211_netifd_bugs

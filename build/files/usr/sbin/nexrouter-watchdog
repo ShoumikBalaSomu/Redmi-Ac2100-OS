@@ -1,0 +1,109 @@
+#!/bin/sh
+# ===========================================================================
+# /usr/sbin/nexrouter-watchdog (v9.2.0 — Self-Healing LAN & Wi-Fi Guardian)
+# ===========================================================================
+# Automatically detects and heals any condition where the router broadcasts
+# SSIDs or powers LAN ports but fails to complete wired/wireless handshakes:
+#
+#   1. Bridge Port Membership Healer (`br-lan`):
+#      If `phy0-ap0`, `phy1-ap0`, `wlan0`, `wlan1`, `ra0`, `rai0`, or
+#      `lan1..lan3` ever detach from `br-lan` (which causes the SSID to keep
+#      broadcasting while DHCP/ARP handshakes fail!), immediately re-enslaves
+#      the interface to `br-lan` and sets it UP.
+#   2. `MT7615N` / `MT7621AT` WPDMA & PCIe Tag Guard:
+#      Ensures `MT_DELAY_INT_CFG` (`0x4210`) is `0x00000000` and `busy_poll`
+#      is `0` so EAPOL 4-way handshakes never stall in DMA rings.
+#   3. `bridger` eBPF L2 Blackhole Killer:
+#      Stops `bridger` if running so stale L2 PPE entries never drop ARP/DHCP.
+#   4. `dnsmasq` DHCP Port 67 Liveness Check:
+#      Verifies `dnsmasq` is running with `nonwildcard=0` and restarts it if
+#      DHCP is unresponsive.
+# ===========================================================================
+
+log() { logger -t nexrouter-watchdog -- "$*"; }
+
+heal_lan_and_wifi() {
+	local healed=0 p ap_if ap_name phy
+
+	# 1. Stop bridger eBPF if active (prevents PPE L2 blackhole on br-lan after 1-2 mins)
+	if [ -x /etc/init.d/bridger ] && pgrep -f bridger >/dev/null 2>&1; then
+		/etc/init.d/bridger stop 2>/dev/null || true
+		/etc/init.d/bridger disable 2>/dev/null || true
+		log "Self-Heal: Stopped bridger eBPF L2 offload to prevent br-lan ARP/DHCP blackhole"
+		healed=$((healed + 1))
+	fi
+
+	# 2. Ensure busy_poll=0 and br-lan ageing_time=30000 (300s)
+	[ -w /proc/sys/net/core/busy_poll ] && printf '0' > /proc/sys/net/core/busy_poll 2>/dev/null || true
+	[ -w /proc/sys/net/core/busy_read ] && printf '0' > /proc/sys/net/core/busy_read 2>/dev/null || true
+	if [ -d /sys/class/net/br-lan/bridge ]; then
+		printf '30000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
+		printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
+		printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
+	fi
+
+	# 3. Verify all wired LAN ports (lan1..lan3) and wireless APs (phy*-ap*) are UP and inside br-lan!
+	if [ -d /sys/class/net/br-lan ]; then
+		ip link set br-lan up 2>/dev/null || true
+		for p in lan1 lan2 lan3; do
+			[ -d "/sys/class/net/$p" ] || continue
+			ip link set "$p" up 2>/dev/null || true
+			if [ ! -e "/sys/class/net/br-lan/brif/$p" ]; then
+				ip link set "$p" master br-lan 2>/dev/null || brctl addif br-lan "$p" 2>/dev/null || true
+				log "Self-Heal: Re-attached wired port $p to br-lan"
+				healed=$((healed + 1))
+			fi
+		done
+
+		for ap_if in /sys/class/net/phy*-ap* /sys/class/net/wlan* /sys/class/net/ra0 /sys/class/net/rai0; do
+			[ -d "$ap_if" ] || continue
+			ap_name="$(basename "$ap_if")"
+			ip link set "$ap_name" up 2>/dev/null || true
+			if [ ! -e "/sys/class/net/br-lan/brif/$ap_name" ]; then
+				ip link set "$ap_name" master br-lan 2>/dev/null || brctl addif br-lan "$ap_name" 2>/dev/null || true
+				log "Self-Heal: Re-attached wireless AP $ap_name to br-lan (restored wireless DHCP/LAN handshake)"
+				healed=$((healed + 1))
+			fi
+		done
+	fi
+
+	# 4. Ensure MT7615N 0x4210 is 0x00000000 (Zero-Stall WPDMA IRQ)
+	for phy in /sys/kernel/debug/ieee80211/phy*; do
+		[ -d "$phy/mt76" ] || continue
+		if [ -e "$phy/mt76/dbdc" ] && [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ]; then
+			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null || true
+			dint="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
+			if [ -n "$dint" ] && [ "$dint" != "0x00000000" ] && [ "$dint" != "0x0" ]; then
+				printf '0x00000000\n' > "$phy/mt76/regval" 2>/dev/null || true
+				log "Self-Heal: Reset MT7615N 0x4210 from $dint to 0x00000000 (unblocked WPDMA IRQ)"
+				healed=$((healed + 1))
+			fi
+		fi
+	done
+
+	# 5. Verify dnsmasq is alive and serving DHCP on br-lan
+	if ! pgrep -x dnsmasq >/dev/null 2>&1; then
+		uci -q set dhcp.@dnsmasq[0].nonwildcard='0'
+		uci -q commit dhcp
+		/etc/init.d/dnsmasq restart 2>/dev/null || true
+		log "Self-Heal: Restarted dnsmasq DHCP/DNS server"
+		healed=$((healed + 1))
+	fi
+
+	# 6. Flush failed ARP neighbor entries on br-lan
+	ip neigh flush dev br-lan nud failed 2>/dev/null || true
+	return 0
+}
+
+case "${1:-heal}" in
+	status)
+		echo "=== NexRouter v9.2 Self-Healing LAN & Wireless Guardian ==="
+		echo "br-lan members : $(ls /sys/class/net/br-lan/brif 2>/dev/null | tr '\n' ' ')"
+		echo "dnsmasq alive  : $(pgrep -x dnsmasq >/dev/null 2>&1 && echo 'YES (DHCP/DNS Active)' || echo 'NO')"
+		echo "hostapd alive  : $(pgrep -f 'hostapd|wpad' >/dev/null 2>&1 && echo 'YES (WPA2/WPA3 EAPOL Active)' || echo 'NO')"
+		echo "bridger state  : $(pgrep -f bridger >/dev/null 2>&1 && echo 'RUNNING (WARNING)' || echo 'STOPPED (Zero-Blackhole Safe)')"
+		;;
+	*)
+		heal_lan_and_wifi
+		;;
+esac

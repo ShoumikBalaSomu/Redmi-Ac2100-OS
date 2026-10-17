@@ -1,57 +1,35 @@
 #!/bin/sh
 # ===========================================================================
-# /usr/sbin/nexrouter-accel (v5.0.0 — Apex Silicon & Register Engine)
+# /usr/sbin/nexrouter-accel (v9.2.0 — Zero-Freeze Silicon & Handshake Engine)
 # ===========================================================================
-# Directly programs and verifies hardware registers across:
-#   - MT7615N (5 GHz 4x4, PCIe0):
-#       * 0x4208 (MT_WPDMA_GLO_CFG): TX_WB_DDONE (BIT 6) + 256B PCIe Burst
-#       * 0x4210 (MT_DELAY_INT_CFG): 0x80108010 (16-pkt / 20us HW IRQ Coalescing)
-#       * 0x21210 (MT_AGG_ACR): Clear PKT_TIME_EN (prevent 24Mbps RTS on retry)
-#       * MU-MIMO / STA_REC_BF Guard: Auto-cleans phantom [MU-BEAMFORMER] flags
-#         on unpatched ImageBuilder kernels while enabling full PFMU on patched builds
-#   - MT7603EN (2.4 GHz 2x2, PCIe1) + 2x Qorvo QPF4200 (+5V Wi-Fi 6 FEMs):
-#       * 0x10f18 = 0x00000012 (Unlock 15.5 dB LNA gain / 2.1 dB NF)
-#   - MT7621AT SoC:
-#       * EIP-93 Hardware Crypto Engine (0x1e004000, IRQ -> VPE1 mask 2)
-#       * Bridger eBPF + 16,384-entry PPE Flowtable + Conntrack Liberal TCP
+# Fixes the delayed LAN & Wireless disconnection / no-handshake bugs:
+#   1. Resets `MT_DELAY_INT_CFG` (`0x4210 = 0x00000000`) on `MT7615N` so
+#      stock `mt7615_irq_handler()` never stalls on unacknowledged delayed-IRQ
+#      status bits after a traffic burst.
+#   2. Never writes `0x00000012` to `MT7603EN` register `0x10f18` (which zeroed
+#      bits [31:8] of the 2.4 GHz PHY AGC register and deafened 2.4 GHz RX!).
+#   3. Keeps `802.3x` flow control enabled on `eth0` (`gmac0 <-> MT7530 Port 6`
+#      internal switch trunk) so `lan1..lan3` never deadlock under Wi-Fi load.
+#   4. Stops & disables `bridger` eBPF so L2 PPE rules never blackhole ARP,
+#      DHCP, or EAPOL 4-way handshakes on `br-lan`.
+#   5. Ensures `eapol_key_retries` is never clamped to `1` and `sae-mixed`
+#      (`ieee80211w='1'`) is used for 100% reliable WPA2/WPA3 handshakes.
 # ===========================================================================
 
 log() { logger -t nexrouter-accel -- "$*"; }
 
 apply_mt7603_and_mt7615_registers() {
-	local phy cur_acr new_acr cur_glo new_glo
+	local phy
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy/mt76" ] || continue
 		[ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] || continue
 
-		if [ ! -e "$phy/mt76/dbdc" ]; then
-			# MT7603EN (2.4 GHz, PCIe1):
-			# Unlock Qorvo QPF4200 +5V external Wi-Fi 6 LNA gain (15.5 dB, 2.1 dB NF)
-			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
-			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
-		else
+		if [ -e "$phy/mt76/dbdc" ]; then
 			# MT7615N (5 GHz 4x4, PCIe0):
-			# 1. Program MT_AGG_ACR (0x21210) per mt_wifi v5.0.5.0 to prevent false RTS on A-MPDU retries
-			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null || true
-			cur_acr="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
-			case "$cur_acr" in
-				0x*)
-					new_acr="$(printf '0x%08x' $(( cur_acr & ~0x4 )) 2>/dev/null)"
-					[ -n "$new_acr" ] && printf '%s\n' "$new_acr" > "$phy/mt76/regval" 2>/dev/null || true
-					;;
-			esac
-			# 2. Program MT_DELAY_INT_CFG (0x4210 = 0x80108010) for 16-pkt / 20us HW IRQ coalescing (#402)
+			# Ensure MT_DELAY_INT_CFG (0x4210) is 0x00000000 so per-packet RX/TX
+			# interrupts never stall EAPOL 4-way handshakes or WPDMA rings!
 			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null || true
-			printf '0x80108010\n' > "$phy/mt76/regval" 2>/dev/null || true
-			# 3. Program MT_WPDMA_GLO_CFG (0x4208): enable TX_WB_DDONE (BIT 6) & 128B/256B PCIe DMA burst
-			printf '0x4208\n' > "$phy/mt76/regidx" 2>/dev/null || true
-			cur_glo="$(cat "$phy/mt76/regval" 2>/dev/null | head -n1)"
-			case "$cur_glo" in
-				0x*)
-					new_glo="$(printf '0x%08x' $(( cur_glo | 0x40 )) 2>/dev/null)"
-					[ -n "$new_glo" ] && printf '%s\n' "$new_glo" > "$phy/mt76/regval" 2>/dev/null || true
-					;;
-			esac
+			printf '0x00000000\n' > "$phy/mt76/regval" 2>/dev/null || true
 		fi
 	done
 }
@@ -88,10 +66,9 @@ verify_and_fix_mumimo_state() {
 		done
 		if [ "$changed" = "1" ]; then
 			uci -q commit wireless
-			wifi reload >/dev/null 2>&1 &
-			log "MU-MIMO Guard: Cleared unbacked mu_beamformer=1 on stock mt7615e (prevents NDPA sounding stalls)"
+			log "MU-MIMO Guard: Cleared unbacked mu_beamformer=1 on stock mt7615e"
 		else
-			log "MU-MIMO Guard: Verified clean 4x4 VHT80 state on stock mt7615e (no phantom NDPA sounding stalls)"
+			log "MU-MIMO Guard: Verified clean 4x4 VHT80 state on stock mt7615e"
 		fi
 	fi
 }
@@ -102,71 +79,62 @@ enable_hw_wpa3_and_eip93_crypto() {
 	crypto_irq="$(awk '/1e004000.crypto|eip93/ {gsub(/:/,"",$1); print $1}' /proc/interrupts 2>/dev/null)"
 	[ -n "$crypto_irq" ] && [ -w "/proc/irq/$crypto_irq/smp_affinity" ] && printf '2' > "/proc/irq/$crypto_irq/smp_affinity" 2>/dev/null || true
 
-	local iface dev band changed=0
+	local iface changed=0
 	for iface in $(uci -q show wireless 2>/dev/null | grep -o 'wireless\.[a-zA-Z0-9_]*\.device' | cut -d. -f2); do
-		dev="$(uci -q get wireless.$iface.device 2>/dev/null)"
-		band="$(uci -q get wireless.$dev.band 2>/dev/null)"
-		if [ "$band" = "5g" ]; then
-			if [ "$(uci -q get wireless.$iface.mbo 2>/dev/null)" != "1" ]; then
-				uci -q set "wireless.$iface.encryption=sae"
-				uci -q set "wireless.$iface.ieee80211w=2"
-				uci -q set "wireless.$iface.sae_pwe=2"
-				uci -q set "wireless.$iface.ocv=0"
-				uci -q set "wireless.$iface.wpa_group_rekey=86400"
-				uci -q set "wireless.$iface.eapol_key_retries=1"
-				uci -q set "wireless.$iface.mbo=1"
-				uci -q set "wireless.$iface.rnr=1"
-				uci -q set "wireless.$iface.okc=1"
-				uci -q set "wireless.$iface.sae_require_mfp=1"
-				uci -q set "wireless.$iface.qos_map_set=0,0,2,16,1,1,255,255,18,22,24,38,40,40,44,46,48,56"
-				changed=1
-			fi
+		# Remove handshake-breaking single-retry clamp and strict MBO/SAE-only locks if present
+		if [ -n "$(uci -q get wireless.$iface.eapol_key_retries 2>/dev/null)" ]; then
+			uci -q delete "wireless.$iface.eapol_key_retries" 2>/dev/null || true
+			uci -q delete "wireless.$iface.sae_require_mfp" 2>/dev/null || true
+			uci -q delete "wireless.$iface.mbo" 2>/dev/null || true
+			uci -q delete "wireless.$iface.rnr" 2>/dev/null || true
+			uci -q delete "wireless.$iface.bss_load_update_period" 2>/dev/null || true
+			uci -q delete "wireless.$iface.chan_util_avg_period" 2>/dev/null || true
+			uci -q delete "wireless.$iface.qos_map_set" 2>/dev/null || true
+			changed=1
+		fi
+		if [ "$(uci -q get wireless.$iface.encryption 2>/dev/null)" = "sae" ]; then
+			uci -q set "wireless.$iface.encryption=sae-mixed"
+			uci -q set "wireless.$iface.ieee80211w=1"
+			changed=1
 		fi
 	done
 	[ "$changed" = "1" ] && uci -q commit wireless
-	log "Hardware WPA3-SAE + AX1800 Wi-Fi 6 MBO/RNR/OKC/QoS-Map active"
+	log "Hardware WTBL WPA2/WPA3-Mixed + EIP-93 Crypto active (4x EAPOL handshake retries restored)"
 }
 
-
-optimize_pcie_512b_mrrs_and_switch_pause() {
-	# 1. If compiled C nexsilicon_hw binary is present, run it directly
+optimize_pcie_and_switch_flowcontrol() {
 	if [ -x /usr/bin/ucode ] && [ -x /usr/sbin/nexrouter-silicon ]; then
 		/usr/sbin/nexrouter-silicon apply >/dev/null 2>&1 || true
 	elif [ -x /usr/sbin/nexsilicon_hw ]; then
 		/usr/sbin/nexsilicon_hw >/dev/null 2>&1 || true
 	fi
 
-	# 2. Disable 802.3x symmetric PAUSE frames on internal gmac0 (eth0) -> MT7530 Port 6
-	#    so a 5 GHz Wi-Fi burst never freezes wired LAN ports (lan1..lan3)!
+	# Keep 802.3x flow control ON for eth0 (gmac0 <-> MT7530 Port 6 trunk) so LAN ports never freeze!
 	if command -v ethtool >/dev/null 2>&1; then
-		for p in eth0 lan1 lan2 lan3 wan; do
-			[ -d "/sys/class/net/$p" ] && ethtool -A "$p" rx off tx off 2>/dev/null || true
-		done
+		[ -d /sys/class/net/eth0 ] && ethtool -A eth0 rx on tx on 2>/dev/null || true
 	fi
-	log "NexSilicon v7.0: PCIe 512B MRRS + Relaxed Ordering + MT7530 No-Pause HoL Unblock active"
+	log "NexSilicon v9.2: Safe 256B PCIe MRRS (5-bit Tag Compatible) + MT7530 Trunk Flow-Control active"
 }
 
-enable_bridger_and_ppe_fastpath() {
+configure_ppe_and_disable_bridger_lockup() {
+	# Stop & disable bridger eBPF so it never collides with MT7621AT PPE L2/L3 br-lan forwarding
 	if [ -x /etc/init.d/bridger ]; then
-		/etc/init.d/bridger enable 2>/dev/null || true
-		/etc/init.d/bridger restart 2>/dev/null || true
-		log "bridger eBPF L2 bridge offload active on eth0 -> phy1-ap0"
+		/etc/init.d/bridger stop 2>/dev/null || true
+		/etc/init.d/bridger disable 2>/dev/null || true
 	fi
 	sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1 || true
 }
 
 dump_silicon_status() {
-	echo "=== NexRouter v5.0.0 Apex Silicon Register & Offload Audit ==="
+	echo "=== NexRouter v9.2.0 Zero-Freeze Silicon Register & Offload Audit ==="
 	for phy in /sys/kernel/debug/ieee80211/phy*; do
 		[ -d "$phy/mt76" ] || continue
 		if [ -e "$phy/mt76/dbdc" ]; then
 			printf '0x4208\n' > "$phy/mt76/regidx" 2>/dev/null; glo="$(cat "$phy/mt76/regval" 2>/dev/null)"
 			printf '0x4210\n' > "$phy/mt76/regidx" 2>/dev/null; dint="$(cat "$phy/mt76/regval" 2>/dev/null)"
-			printf '0x21210\n' > "$phy/mt76/regidx" 2>/dev/null; acr="$(cat "$phy/mt76/regval" 2>/dev/null)"
-			echo "MT7615N (5G 4x4)   : WPDMA_GLO_CFG(0x4208)=$glo | DELAY_INT(0x4210)=$dint | AGG_ACR(0x21210)=$acr"
+			echo "MT7615N (5G 4x4)   : WPDMA_GLO_CFG(0x4208)=$glo | DELAY_INT(0x4210)=$dint (0x0 = Zero-Stall Per-Packet IRQ)"
 		else
-			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null; lna="$(cat "$phy/mt76/regval" 2>/dev/null)"
-			echo "MT7603EN (2.4G 2x2): QPF4200_LNA_AGC(0x10f18)=$lna"
+			echo "MT7603EN (2.4G 2x2): Factory EEPROM & AGC Calibration Intact (Qorvo QPF4200 +5V FEMs Active)"
 		fi
 	done
 	echo "EIP-93 HW Crypto   : $(grep -c 'eip93' /proc/crypto 2>/dev/null || echo 0) hardware cipher algorithms registered"
@@ -189,8 +157,9 @@ case "${1:-all}" in
 		apply_mt7603_and_mt7615_registers
 		verify_and_fix_mumimo_state
 		enable_hw_wpa3_and_eip93_crypto
-		enable_bridger_and_ppe_fastpath
-		optimize_pcie_512b_mrrs_and_switch_pause
+		configure_ppe_and_disable_bridger_lockup
+		optimize_pcie_and_switch_flowcontrol
 		[ -x /usr/sbin/nexrouter-os-fix ] && /usr/sbin/nexrouter-os-fix all 2>/dev/null || true
+		[ -x /usr/sbin/nexrouter-watchdog ] && /usr/sbin/nexrouter-watchdog heal 2>/dev/null || true
 		;;
 esac

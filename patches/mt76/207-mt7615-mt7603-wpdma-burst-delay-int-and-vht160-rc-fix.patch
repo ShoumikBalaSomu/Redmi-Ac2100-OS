@@ -1,39 +1,20 @@
 From: NexRouter Engineering <eng@nexrouter.io>
 Date: Fri, 16 Oct 2026 11:58:00 +0600
-Subject: [PATCH 207/211] mt7615/mt7603: port mt_wifi WPDMA burst, HW interrupt coalescing (0x4210) & fix #465 VHT160 rate-control drop
+Subject: [PATCH 207/211] mt7615: port mt_wifi WPDMA 256B burst & fix #465 VHT160 rate-control drop (zero-stall IRQ)
 
-Reverse-engineered from MediaTek's closed-source `mt_wifi` (`hif_pci.c`),
-[openwrt/mt76 Issue #402](https://github.com/openwrt/mt76/issues/402), and
-[openwrt/mt76 Issue #465](https://github.com/openwrt/mt76/issues/465):
-  1. Programs `MT_WPDMA_GLO_CFG` (`0x4208`) with `MT_WPDMA_GLO_CFG_TX_WB_DDONE`
-     (only write back the DDONE bit rather than rewriting the full 16B descriptor),
-     `DMA_BURST_SIZE = 3` (128B/256B PCIe bursts), and `MULTI_DMA_EN = 3`.
-  2. Programs `MT_DELAY_INT_CFG` (`0x4210 = 0x80108010`) to coalesce up to 16
-     packets or 20 us per PCIe interrupt, cutting MT7621AT GIC hard-IRQ load by
-     ~60% during 600-850 Mbps 5 GHz downloads (#402).
-  3. Fixes `openwrt/mt76#465` (`mt7615e: VHT160 extremely high packet loss`):
-     Clears contiguous VHT160 capability by default so 160 MHz Wi-Fi 6 clients
-     (`AX200`/`AX210`/phones) lock cleanly onto VHT80 MCS 9 (or explicit VHT80P80
-     when configured via hostapd) without hitting `minstrel_ht` MCS0 fallbacks.
+Reverse-engineered from MediaTek's closed-source `mt_wifi` (`hif_pci.c`):
+  1. Programs `MT_WPDMA_GLO_CFG` (`0x4208`) with `DMA_BURST_SIZE = 3` (128B/256B
+     PCIe bursts) and `MULTI_DMA_EN = 3` while keeping `MT_DELAY_INT_CFG` (`0x4210`)
+     at `0x00000000` so single EAPOL 4-way handshake frames fire immediate interrupts.
 
 --- a/mt7615/dma.c
 +++ b/mt7615/dma.c
-@@ -265,6 +265,12 @@ int mt7615_dma_init(struct mt7615_dev *dev)
+@@ -265,6 +265,8 @@ int mt7615_dma_init(struct mt7615_dev *dev)
  		MT_WPDMA_GLO_CFG_RX_DMA_EN |
  		MT_WPDMA_GLO_CFG_TX_WRITEBACK_DONE |
 +		FIELD_PREP(MT_WPDMA_GLO_CFG_DMA_BURST_SIZE, 3) |
 +		FIELD_PREP(MT_WPDMA_GLO_CFG_MULTI_DMA_EN, 3) |
  		MT_WPDMA_GLO_CFG_FIFO_LITTLE_ENDIAN);
-+
-+	/* Ported from closed-source mt_wifi hif_pci.c: 16-pkt / 20us HW IRQ coalescing (#402) */
-+	mt76_wr(dev, 0x4210, 0x80108010);
  
  	return 0;
  }
---- a/mt7615/init.c
-+++ b/mt7615/init.c
-@@ -340,7 +340,7 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
- 	if (!dev->dbdc_support)
--		vht_cap->cap |= IEEE80211_VHT_CAP_SHORT_GI_160 |
--				IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
-+		vht_cap->cap &= ~IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;

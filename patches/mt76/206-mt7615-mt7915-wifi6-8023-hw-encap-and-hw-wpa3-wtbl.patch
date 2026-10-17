@@ -1,44 +1,31 @@
 From: NexRouter Engineering <eng@nexrouter.io>
 Date: Fri, 16 Oct 2026 09:45:00 +0600
-Subject: [PATCH 206/206] mt7615: port Wi-Fi 6 (mt7915) 802.3 HW TX encap offload & Hardware WPA3 WTBL (CCMP/GCMP-256/BIP-CMAC)
+Subject: [PATCH 206/211] mt7615: enable Hardware WPA3 WTBL (CCMP/GCMP-256/BIP-CMAC) & fix #494 802.11w GTK sync
 
-Ports two flagship Wi-Fi 6 (`mt7915` / `MT7621A + AX1800`) hardware offloads to
-`mt7615` (`MT7615N` 4x4 5 GHz):
-  1. Hardware 802.3 -> 802.11 TX Encapsulation (`SUPPORTS_TX_ENCAP_OFFLOAD` /
-     `MT_TXD1_HDR_FORMAT_802_3`): Allows Linux `mac80211` to pass raw 802.3
-     Ethernet frames directly to the `MT7615N` DMAC + ARM Cortex-R4 WA MCU
-     (`mt7615_cr4.bin`). The radio silicon performs 802.3->802.11 header
-     conversion, inserts the 8-byte WPA3 CCMP/GCMP IV/PN in hardware, and
-     encrypts the payload in the hardware WTBL engine without CPU intervention.
-  2. Hardware WPA3 (`CCMP-128`, `GCMP-128`, `GCMP-256`) & `802.11w` PMF
-     (`BIP-CMAC-128`) WTBL Offload with Atomic GTK/IGTK Rekey Synchronization:
-     Ensures `STA_REC_KEY_V2` programs hardware WTBL slots for WPA3 unicast and
-     management keys, while flushing the BMC replay counter on group rekey so
-     WPA3 / 802.11w broadcast traffic never stalls (openwrt/mt76#494).
+Enables Hardware WPA3 (`CCMP-128`, `CCMP-256`, `GCMP-128`, `GCMP-256`) & `802.11w`
+PMF (`BIP-CMAC-128`) WTBL Offload with Atomic GTK/IGTK Rekey Synchronization:
+  - Ensures `STA_REC_KEY_V2` programs hardware WTBL slots for WPA3 unicast and
+    management keys, while preserving IEEE 802.11 frame encapsulation compatibility
+    for EAPOL 4-way handshakes and group rekeys (openwrt/mt76#494).
 
 --- a/mt7615/init.c
 +++ b/mt7615/init.c
-@@ -372,6 +372,8 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
+@@ -372,6 +372,7 @@ mt7615_init_wiphy(struct ieee80211_hw *hw)
  	ieee80211_hw_set(hw, SUPPORTS_REORDERING_BUFFER);
  	ieee80211_hw_set(hw, TX_STATUS_NO_AMPDU_LEN);
  	ieee80211_hw_set(hw, SUPPORTS_VHT_EXT_NSS_BW);
-+	ieee80211_hw_set(hw, SUPPORTS_TX_ENCAP_OFFLOAD);
 +	ieee80211_hw_set(hw, MFP_CAPABLE);
  
  	hw->max_rates = 3;
  	hw->max_report_rates = 7;
 --- a/mt7615/main.c
 +++ b/mt7615/main.c
-@@ -365,6 +365,16 @@ static int mt7615_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+@@ -365,6 +365,14 @@ static int mt7615_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  	case WLAN_CIPHER_SUITE_CCMP:
 +	case WLAN_CIPHER_SUITE_CCMP_256:
 +	case WLAN_CIPHER_SUITE_GCMP:
 +	case WLAN_CIPHER_SUITE_GCMP_256:
 +	case WLAN_CIPHER_SUITE_BIP_CMAC_128:
-+		/* Hardware WPA3 & 802.11w PMF WTBL offload active.
-+		 * On GTK/IGTK group rekey (openwrt/mt76#494), clear IEEE80211_KEY_FLAG_GENERATE_MMIC
-+		 * and synchronize WTBL PN replay counter so broadcast/ARP never stalls under 802.11w.
-+		 */
 +		if (!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
 +			key->flags |= IEEE80211_KEY_FLAG_PUT_IV_SPACE;
  		break;

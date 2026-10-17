@@ -109,7 +109,6 @@ CONFIG_PACKAGE_kmod-mt7615e=y
 CONFIG_PACKAGE_kmod-mt7615-firmware=y
 CONFIG_PACKAGE_wpad-mbedtls=y
 CONFIG_PACKAGE_kmod-nft-offload=y
-CONFIG_PACKAGE_bridger=y
 CONFIG_PACKAGE_kmod-crypto-hw-eip93=y
 CONFIG_PACKAGE_kmod-crypto-authenc=y
 CONFIG_PACKAGE_kmod-crypto-cmac=y

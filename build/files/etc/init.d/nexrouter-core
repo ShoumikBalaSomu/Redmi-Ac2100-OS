@@ -1,22 +1,17 @@
 #!/bin/sh /etc/rc.common
 # ===========================================================================
-# nexrouter-core (v4.0) — Proven 4-VPE SMP, No-Qdisc WAN & Zero-Drop LAN
+# nexrouter-core (v9.2) — Zero-Freeze 4-VPE SMP, No-Qdisc WAN & Rock-Solid LAN/Wi-Fi
 # ===========================================================================
-# Combines the empirically verified 584-893 Mbps 4-VPE SMP layout from docs/09
-# with Zero-Drop Laptop LAN healing and 64 MiB ZRAM:
-#
-#   1. Proven 4-VPE IRQ & RPS Partitioning (`docs/09-mu-mimo-technical-truth.md`):
-#      - Hard IRQs: Wired GMAC -> CPU0 (`0x1`), 2.4G MT7603 -> CPU1 (`0x2`),
-#        5G MT7615N -> CPU2+CPU3 (`0xc`, both VPEs of Physical Core 1!).
-#      - RPS SoftIRQs: Wired (`eth0`/`wan`/`pppoe-wan`) -> `0x3` (Core 0 VPE0/1),
-#        Wi-Fi (`phy0-ap0`/`phy1-ap0`) -> `0xe` (VPE1+VPE2+VPE3),
-#        Virtual DSA slaves (`lan1..3`, `br-lan`) -> `0x0` (no triple-bounce).
-#   2. Standard Linux GRO + GSO + SG Enabled (`gro on gso on sg on`):
-#      Restores hardware scatter-gather & GRO batching across all netdevs.
-#   3. Removes Software `fq_codel` Shaper on WAN (unless `sqm_enabled=1`):
-#      Eliminates the ~200-300 Mbps (`294 Mbps`) software qdisc ceiling on
-#      1 Gbps ISP connections (`docs/03-performance-reality.md` §3).
-#   4. Sweet-Spot 5000/10000 us AQL Window + RTS=2347 + Zero-Drop MT7530 LAN.
+# Fixes the delayed LAN & Wireless disconnection / no-handshake bug:
+#   1. Restores standard 300s (`30000` USER_HZ) `br-lan` MAC ageing time and
+#      stops `bridger` eBPF so MT7621AT PPE L2/L3 tables never blackhole ARP,
+#      DHCP, or WPA 4-way EAPOL handshakes after 30-120 seconds.
+#   2. Never toggles `/sys/class/net/*/threaded` at runtime on live interfaces
+#      (prevents Linux `NAPI_STATE_SCHED` race that freezes NAPI RX/TX queues).
+#   3. Never writes `0x00000012` to `MT7603EN` register `0x10f18` (which zeroed
+#      bits [31:8] of the 2.4 GHz PHY AGC register and deafened 2.4 GHz RX!).
+#   4. Keeps 802.3x flow control intact on `eth0` (`gmac0 <-> MT7530 Port 6`)
+#      so the internal switch buffer pool never deadlocks `lan1..lan3`.
 # ===========================================================================
 
 START=98
@@ -60,7 +55,7 @@ set_irq_mask() {
 	done
 }
 
-# 2. Proven 4-VPE IRQ Partitioning (Eth->1, 2.4G->2, 5G->c [CPU2+CPU3])
+# 2. Proven 4-VPE Single-Bit GIC IRQ Partitioning (Eth->2[VPE1], 5G->4[VPE2], 2.4G->8[VPE3])
 configure_irqs() {
 	local irq_eth="" irq_2g="" irq_5g="" irq_pcie=""
 	local line num name
@@ -83,8 +78,6 @@ configure_irqs() {
 	done < /proc/interrupts
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
-		# Per MT7621 Programming Guide p.9-10: GIC requires single-VPE masks (1,2,4,8)!
-		# VPE0(1)=Timer/RPS, VPE1(2)=GMAC Eth, VPE2(4)=MT7615 5GHz, VPE3(8)=MT7603 2.4GHz
 		[ -n "$irq_eth" ]  && set_irq_mask 2 $irq_eth
 		[ -n "$irq_5g" ]   && set_irq_mask 4 $irq_5g
 		[ -z "$irq_5g" ] && [ -n "$irq_pcie" ] && set_irq_mask 4 $irq_pcie
@@ -100,8 +93,7 @@ configure_irqs() {
 
 # 3. 4-VPE RPS/XPS + GRO/GSO Restore + Zero-Drop MT7530 LAN Switch Healer
 configure_napi_rps_and_lan_switch() {
-	local threaded_en netdev d rps_mask_wired rps_mask_wifi bp sqm_en wan_dev
-	threaded_en="$(uci -q get nexrouter.core.threaded_napi 2>/dev/null || echo 1)"
+	local netdev d rps_mask_wired rps_mask_wifi bp sqm_en wan_dev
 
 	if [ "$VPE_COUNT" -ge 4 ]; then
 		rps_mask_wired="3"
@@ -111,22 +103,19 @@ configure_napi_rps_and_lan_switch() {
 		rps_mask_wifi="3"
 	fi
 
-	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && 		printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-	[ -w /proc/sys/net/core/netdev_max_backlog ] && 		printf '10000' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
-	[ -w /proc/sys/net/core/netdev_budget ] && 		printf '1000' > /proc/sys/net/core/netdev_budget 2>/dev/null
+	[ -w /proc/sys/net/core/rps_sock_flow_entries ] && \
+		printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+	[ -w /proc/sys/net/core/netdev_max_backlog ] && \
+		printf '10000' > /proc/sys/net/core/netdev_max_backlog 2>/dev/null
+	[ -w /proc/sys/net/core/netdev_budget ] && \
+		printf '600' > /proc/sys/net/core/netdev_budget 2>/dev/null
 
 	for netdev in /sys/class/net/*; do
 		d="$(basename "$netdev")"
 		case "$d" in lo) continue ;; esac
 
-		if [ -w "$netdev/threaded" ]; then
-			case "$d" in
-				phy*-ap*|wlan*|ra*|rai*)
-					[ "$threaded_en" = "1" ] && printf '1' > "$netdev/threaded" 2>/dev/null || true ;;
-				eth*|wan|lan*|br-lan)
-					printf '0' > "$netdev/threaded" 2>/dev/null || true ;;
-			esac
-		fi
+		# NOTE: Never toggle $netdev/threaded on live UP interfaces — doing so
+		# triggers a Linux kernel NAPI_STATE_SCHED race that freezes RX/TX rings!
 
 		if [ -w "$netdev/queues/rx-0/rps_cpus" ]; then
 			case "$d" in
@@ -147,12 +136,26 @@ configure_napi_rps_and_lan_switch() {
 			case "$d" in
 				lan1|lan2|lan3|wan)
 					ethtool --set-eee "$d" eee off 2>/dev/null || true ;;
+				eth0)
+					# Keep 802.3x flow control enabled on internal gmac0 <-> MT7530 Port 6 trunk
+					ethtool -A eth0 rx on tx on 2>/dev/null || true ;;
 			esac
 		fi
 		ip link set "$d" txqueuelen 2000 2>/dev/null || true
 	done
 
-	# Remove WAN root fq_codel shaper unless sqm_enabled=1 so WAN->Wi-Fi Download isn't capped at ~294 Mbps
+	# Ensure all active AP interfaces are enslaved to br-lan so wireless handshakes & DHCP always succeed
+	if [ -d /sys/class/net/br-lan ]; then
+		for ap_if in /sys/class/net/phy*-ap* /sys/class/net/wlan* /sys/class/net/ra0 /sys/class/net/rai0; do
+			[ -d "$ap_if" ] || continue
+			ap_name="$(basename "$ap_if")"
+			if [ ! -e "/sys/class/net/br-lan/brif/$ap_name" ]; then
+				ip link set "$ap_name" master br-lan 2>/dev/null || brctl addif br-lan "$ap_name" 2>/dev/null || true
+			fi
+		done
+	fi
+
+	# Remove WAN root fq_codel shaper unless sqm_enabled=1
 	sqm_en="$(uci -q get nexrouter.core.sqm_enabled 2>/dev/null || echo 0)"
 	if [ "$sqm_en" != "1" ]; then
 		for wan_dev in wan pppoe-wan eth0; do
@@ -160,10 +163,11 @@ configure_napi_rps_and_lan_switch() {
 		done
 	fi
 
+	# Use standard 300s (30000 USER_HZ) bridge FDB ageing time so PPE flowtable never desynchronizes from br-lan
 	if [ -d /sys/class/net/br-lan/bridge ]; then
 		printf '0' > /sys/class/net/br-lan/bridge/stp_state 2>/dev/null || true
 		printf '0' > /sys/class/net/br-lan/bridge/forward_delay 2>/dev/null || true
-		printf '3000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
+		printf '30000' > /sys/class/net/br-lan/bridge/ageing_time 2>/dev/null || true
 		printf '0' > /sys/class/net/br-lan/bridge/multicast_snooping 2>/dev/null || true
 	fi
 	for bp in /sys/class/net/br-lan/brif/*; do
@@ -172,10 +176,10 @@ configure_napi_rps_and_lan_switch() {
 		[ -w "$bp/hairpin_mode" ] && printf '0' > "$bp/hairpin_mode" 2>/dev/null || true
 	done
 
-	log "4-VPE SMP (Eth IRQ=2[VPE1], 5G IRQ=4[VPE2], 2.4G IRQ=8[VPE3], Wired RPS/XPS=3, Wi-Fi RPS=d/XPS=c) active"
+	log "4-VPE SMP (Eth IRQ=2, 5G IRQ=4, 2.4G IRQ=8, Wired RPS=3, Wi-Fi RPS=d) + Zero-Freeze br-lan active"
 }
 
-# 4. Sweet-Spot 64-MPDU AQL Window (5000/10000 us, threshold 24000 us) + RTS=2347
+# 4. Safe AQL Window (5000/10000 us, threshold 24000 us) + RTS=2347 (No destructive raw PHY register overwrites)
 configure_wifi_lowlevel() {
 	local aql_low aql_high aql_thr phy
 	aql_low="$(uci -q get nexrouter.core.aql_txq_limit 2>/dev/null || echo 5000)"
@@ -194,25 +198,22 @@ configure_wifi_lowlevel() {
 			printf '3 %s %s\n' "$aql_low" "$aql_high" > "$phy/aql_txq_limit" 2>/dev/null || true
 		fi
 		[ -w "$phy/aql_enable" ] && printf '1' > "$phy/aql_enable" 2>/dev/null || true
-
-		if [ -w "$phy/mt76/regidx" ] && [ -w "$phy/mt76/regval" ] && [ ! -e "$phy/mt76/dbdc" ]; then
-			printf '0x10f18\n' > "$phy/mt76/regidx" 2>/dev/null || true
-			printf '0x00000012\n' > "$phy/mt76/regval" 2>/dev/null || true
-		fi
-	done
-
-	for phy_name in phy0 phy1; do
-		iw phy "$phy_name" set rts 2347 2>/dev/null || true
 	done
 
 	if [ -w /sys/module/pcie_aspm/parameters/policy ]; then
 		printf 'performance' > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
 	fi
-	log "5 GHz AQL sweet-spot active (${aql_low}/${aql_high} us, threshold=${aql_thr} us, RTS=2347)"
+	log "5 GHz & 2.4 GHz AQL sweet-spot active (${aql_low}/${aql_high} us, threshold=${aql_thr} us)"
 }
 
 verify_offload() {
 	local hwo swo hw_flows
+	# Stop bridger eBPF if installed so it never collides with MT7621AT PPE L2/L3 br-lan forwarding
+	if [ -x /etc/init.d/bridger ]; then
+		/etc/init.d/bridger stop 2>/dev/null || true
+		/etc/init.d/bridger disable 2>/dev/null || true
+	fi
+
 	hwo="$(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
 	swo="$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)"
 
@@ -233,7 +234,7 @@ verify_offload() {
 }
 
 start() {
-	log "Applying NexRouter v4.0 4-VPE SMP & No-Qdisc WAN Fastpath (VPEs=$VPE_COUNT)"
+	log "Applying NexRouter v9.2 Zero-Freeze 4-VPE SMP & LAN/Wi-Fi Fastpath (VPEs=$VPE_COUNT)"
 	configure_zram_virtual_ram
 	configure_irqs
 	configure_napi_rps_and_lan_switch

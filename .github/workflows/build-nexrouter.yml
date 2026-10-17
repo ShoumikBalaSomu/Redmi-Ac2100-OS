@@ -1,0 +1,80 @@
+name: NexRouter v6.0 CI Verification & Cloud Firmware Builder
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      release_track:
+        description: 'OpenWrt Build Track (snapshot or 24.10.2)'
+        required: true
+        default: 'snapshot'
+        type: choice
+        options:
+          - snapshot
+          - 24.10.2
+
+jobs:
+  verify-architecture:
+    name: Verify Shell Scripts, Patches, JSON ACLs & Web UI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate All 21 Shell Scripts (bash -n)
+        run: |
+          for s in build/*.sh build/files/etc/uci-defaults/* build/files/etc/init.d/* \
+                   build/files/etc/hotplug.d/*/* build/files/usr/sbin/* \
+                   build/files/usr/libexec/nexrouter/* build/files/usr/libexec/rpcd/*; do
+            echo "Checking $s"
+            bash -n "$s"
+          done
+
+      - name: Build & Test Zero-Dependency /nex/ Web UI (57 Tests)
+        run: |
+          cd webui
+          node build.mjs
+          node --test test/webui.test.mjs
+
+      - name: Compile & Test Quantum-Inspired Simulated Bifurcation (QIO) Engine
+        run: |
+          gcc -O3 -Wall src/nexqio/nexqio.c -o /tmp/nexqio
+          gcc -O3 -Wall src/nexsilicon/nexsilicon_hw.c -o /tmp/nexsilicon_hw
+          /tmp/nexsilicon_hw status
+          /tmp/nexqio -52 1 1 650000
+          /tmp/nexqio -68 5 4 120000
+
+  build-firmware:
+    name: Build Sysupgrade Firmware (.bin)
+    needs: verify-architecture
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install OpenWrt ImageBuilder Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential gawk gettext git libncurses5-dev \
+            libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget curl zstd xz-utils jq gcc-mipsel-linux-gnu
+
+      - name: Build NexRouter Sysupgrade Image
+        run: |
+          chmod +x build/build.sh
+          ./build/build.sh --release "${{ github.event.inputs.release_track || 'snapshot' }}"
+          node analysis/tools/fwscan.mjs out/*sysupgrade*.bin
+
+      - name: Upload Sysupgrade Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexrouter-v6.0-redmi-ac2100-${{ github.event.inputs.release_track || 'snapshot' }}
+          path: out/*sysupgrade*.bin
