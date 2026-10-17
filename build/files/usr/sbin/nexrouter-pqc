@@ -11,12 +11,17 @@
 
 case "${1:-status}" in
 	gen-pq-psk)
-		# Mix 64 bytes of kernel/EIP-93 hardware entropy + timestamp/interrupt jitter through SHA-256
-		(
-			dd if=/dev/urandom bs=64 count=1 2>/dev/null
-			cat /proc/interrupts /proc/timer_list /proc/uptime 2>/dev/null
-		) | sha256sum | awk '{print $1}' | xxd -r -p 2>/dev/null | base64 2>/dev/null || \
-		head -c 32 /dev/urandom | base64
+		if [ -x /usr/bin/ucode ]; then
+			/usr/bin/ucode -e '
+				let fs = require("fs");
+				let b = fs.readfile("/dev/urandom", 32);
+				print(b64enc(b) + "\n");
+			'
+		elif command -v base64 >/dev/null 2>&1; then
+			head -c 32 /dev/urandom | base64
+		else
+			hexdump -vn 32 -e '4/4 "%08X" 1 "\n"' /dev/urandom
+		fi
 		;;
 	*)
 		echo "=== NexRouter v6.0 Post-Quantum & Hardware Crypto Status ==="
